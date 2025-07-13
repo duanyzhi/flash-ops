@@ -86,8 +86,10 @@ def build_for_cuda():
     sources = (
         [
             os.path.join("csrc", "py_init.cpp"),
-            os.path.join("csrc", "norm", "norm.cc"),
+            os.path.join("csrc", "norm", "norm.cpp"),
             os.path.join("csrc", "norm", "layernorm.cu"),
+            os.path.join("csrc", "linear", "gemm_mma.cu"),
+            os.path.join("csrc", "linear", "linear.cpp"),
         ]
     )
 
