@@ -9,6 +9,11 @@ torch.cuda.manual_seed_all(12138)
 TestInfos = [
     # shape, dtype, bias, device, atol, speedup
     ((1, 1024, 1024, 1024), torch.half, True, "cuda", 0.04, 0.2),
+    ((1, 2048, 2048, 2048), torch.half, True, "cuda", 0.04, 0.2),
+    ((1, 4096, 4096, 4096), torch.half, True, "cuda", 0.04, 0.2),
+    ((1, 8192, 8192, 8192), torch.half, True, "cuda", 0.04, 0.2),
+    ((1, 11264, 11264, 11264), torch.half, True, "cuda", 0.04, 0.2),
+    ((1, 16384, 16384, 16384), torch.half, True, "cuda", 0.04, 0.2),
 ]
 
 class Linear(torch.nn.Module):
