@@ -11,6 +11,7 @@ const unsigned int WARP_REDUCE_MASK = 0xffffffff;
 #define MAX_THREADS 1024  // Max threads per block for Ada
 #define DIV_UP(x, y) ((x) + (y) - 1) / (y)
 #define WARP_SIZE 32
+#define OFFSET(row, col, ld) ((row) * (ld) + (col))
 
 __device__ __forceinline__ float convert_fp16_to_fp32(half data) { return __half2float(data); }
 __device__ __forceinline__ float convert_fp16_to_fp32(nv_bfloat16 data) { return __bfloat162float(data); }
