@@ -2,6 +2,7 @@ import torch
 from flash_ops import _C
 import pytest
 import nvtx
+from tabulate import tabulate
 
 torch.manual_seed(12138)
 torch.cuda.manual_seed_all(12138) 
@@ -26,14 +27,22 @@ class Linear(torch.nn.Module):
     
 iter = 50
 
+RESULTS = []
+
+ #"(M, K, N)", "sync time/ms", "(Throughput/GFLOPS)"],
+
+
 @pytest.mark.parametrize("Infos", TestInfos)
 def test_linear(
     Infos
 ):
   Shape, Dtype, Bias, Device, Atol, Speedup = Infos
-  print("=="*30)
-  print(Infos)
+  #print("=="*30)
+  #print(Infos)
+  line = []
   B, M, K, N = Shape
+  line.append((M, K, N))
+  
   x = torch.randn([B, M, K], device=Device, dtype=Dtype)
   
   layer = Linear(K, N, Bias, Dtype, Device)
@@ -53,14 +62,14 @@ def test_linear(
 
       end.record() 
       torch.cuda.synchronize()
-  print("avg pytorch linear sync time: ", start.elapsed_time(end) / iter, " ms.")
+  #print("avg pytorch linear sync time: ", start.elapsed_time(end) / iter, " ms.")
 
   compute_flops = M * (K + (K - 1)) * N
-  print("FLOPS: ", compute_flops)
-  torch_time = start.elapsed_time(end) / iter / 1000
+  #print("FLOPS: ", compute_flops)
+  torch_time = start.elapsed_time(end) / iter
 
-  torch_throughput = compute_flops / torch_time / (10 ** 9)
-  print("Torch Throughput: ", torch_throughput, " GFLOPS")
+  torch_throughput = compute_flops / (torch_time / 1000) / (10 ** 9)
+  #print("Torch Throughput: ", torch_throughput, " GFLOPS")
   
   with nvtx.annotate('flash_ops'):
       start_flash = torch.cuda.Event(enable_timing=True)
@@ -71,11 +80,36 @@ def test_linear(
 
       end_flash.record() 
       torch.cuda.synchronize()
-  print("avg flash linear sync time: ", start_flash.elapsed_time(end_flash) / iter, " ms.")
+  #print("avg flash linear sync time: ", start_flash.elapsed_time(end_flash) / iter, " ms.")
 
-  flash_time = start_flash.elapsed_time(end_flash) / iter / 1000.0
+  flash_time = start_flash.elapsed_time(end_flash) / iter
 
-  flash_throughput = compute_flops / flash_time / (10 ** 9)
-  print("Flash Throughput: ", flash_throughput, " GFLOPS")
+  flash_throughput = compute_flops / (flash_time / 1000) / (10 ** 9)
+  #print("Flash Throughput: ", flash_throughput, " GFLOPS")
  
   torch.testing.assert_close(torch_out.float(), flash_out.float(), atol=Atol, rtol=Atol)
+
+  result = {
+        "Shape": f"({M}, {K}, {N})",
+        "PyTorch Time (ms)": f"{torch_time:.2f}",
+        "Flash Time (ms)": f"{flash_time:.2f}",
+        "PyTorch GFLOPS": f"{torch_throughput:.2f}",
+        "Flash GFLOPS": f"{flash_throughput:.2f}",
+        "Speedup": f"{torch_time/flash_time:.2f}x"
+  }
+  RESULTS.append(result)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def print_results():
+    yield
+    if RESULTS:
+        #headers = RESULTS[0].keys()
+        #print(headers)
+        #rows = [list(result.values()) for result in RESULTS]
+        #print(rows)
+        # print(tabulate(rows, headers=headers, tablefmt="grid", stralign="right", numalign="right"))
+        print(RESULTS)
+        print(tabulate(RESULTS, headers="keys", tablefmt="fancy_grid"))
+
+
