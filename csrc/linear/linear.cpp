@@ -8,7 +8,7 @@ at::Tensor linear(const at::Tensor & input, const at::Tensor & weight, const c10
 		     weight.device().type() == c10::DeviceType::CUDA;
   TORCH_CHECK(on_device, "input and weight must be CUDA device.");
   if (input.scalar_type() == at::kHalf) {
-    return mma_forward(input, weight, bias);
+    return multi_stage_mma_forward(input, weight, bias);
   }
   return at::linear(input, weight, bias);
 }
