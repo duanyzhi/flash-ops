@@ -31,6 +31,14 @@ __device__ __forceinline__ nv_bfloat16 convert_fp32_to_fp16<nv_bfloat16>(float d
     return __float2bfloat16(data);
 }
 
+inline __device__ float warp_reduce_sum(float val) {
+  val += __shfl_xor_sync(~0, val, 16);
+  val += __shfl_xor_sync(~0, val, 8);
+  val += __shfl_xor_sync(~0, val, 4);
+  val += __shfl_xor_sync(~0, val, 2);
+  val += __shfl_xor_sync(~0, val, 1);
+  return val;
+}
 
 template<typename T, int NUM>
 __inline__ __device__ T warpReduceSum(T* val)

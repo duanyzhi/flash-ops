@@ -16,6 +16,9 @@ namespace flash_ops {
 at::Tensor layer_norm(const at::Tensor x, at::IntArrayRef normalized_shape, const c10::optional<at::Tensor>& weight,
     const c10::optional<at::Tensor>& bias, double eps = 1e-5);
 
+at::Tensor rms_norm(const at::Tensor x, at::IntArrayRef normalized_shape, const c10::optional<at::Tensor>& weight,
+    double eps = 1e-5);
+
 at::Tensor linear(const at::Tensor & input, const at::Tensor & weight, const c10::optional<at::Tensor> & bias={});
 
 }  // namespace flash_ops

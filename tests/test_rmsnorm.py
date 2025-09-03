@@ -1,4 +1,4 @@
-from flash_ops.norm import LayerNorm
+from flash_ops.norm import RMSNorm
 import torch
 import torch.nn as nn
 import pytest
@@ -6,25 +6,25 @@ import pytest
 # input shapes
 SHAPES = [
     ## input shepe: (M, N) and norm shape: (N)
-    # ((1, 1024), (1024)),
-    ((1, 4096), (4096)),
+    ((1, 1024), (1024)),
+    # ((1, 4096), (4096)),
     # ((1, 4096 * 4), (4096 * 4)),
-    ((1, 4096 * 20), (4096 * 20)),
-    # ((50, 4096), (4096)),
-    ((4096, 4096), (4096)),
-    ((2, 2304, 1280), (2304, 1280)), # batch, sentence_length, embedding_dim
-     ((2, 2304, 1280), (1280)), 
-    ((2, 9216 * 640), (9216 * 640)),
-    ((20, 5, 10, 10), (10, 10)),  # N, C, H, W
-    ((2, 5056, 640), (640)),
-    ((2, 1280, 1280), (1280)),
+    # ((1, 4096 * 20), (4096 * 20)),
+    # # ((50, 4096), (4096)),
+    # ((4096, 4096), (4096)),
+    # ((2, 2304, 1280), (2304, 1280)), # batch, sentence_length, embedding_dim
+    #  ((2, 2304, 1280), (1280)), 
+    # ((2, 9216 * 640), (9216 * 640)),
+    # ((20, 5, 10, 10), (10, 10)),  # N, C, H, W
+    # ((2, 5056, 640), (640)),
+    # ((2, 1280, 1280), (1280)),
 ]
 
-DTYPES = [torch.float32, torch.float16, torch.bfloat16]
-EPS = [1e-5, 1e-6]
-BIAS = [True, False]
+DTYPES = [torch.float16]
+EPS = [1e-5]
+BIAS = [False]
 BACKEND = ["cuda"]
-EA = [True, False]
+EA = [False]
 
 # change iter for benchmark
 WARE_UP = 1
@@ -36,7 +36,7 @@ ITER = 1
 @pytest.mark.parametrize("Bias", BIAS)
 @pytest.mark.parametrize("Device", BACKEND)
 @pytest.mark.parametrize("elementwise_affine", EA)
-def test_layernorm(
+def test_rmsnorm(
     Shape,
     Dtype,
     Eps,
@@ -51,22 +51,25 @@ def test_layernorm(
     print("normalized_shape: ", normalized_shape)
 
     x = torch.randn(input_shape, device=Device, dtype=Dtype)
+    print("sum: ", (x ** 2).mean(-1, keepdim=True))
 
-    norm = LayerNorm(normalized_shape=normalized_shape).to(Dtype).cuda()
+    x_sum = (x ** 2).mean(-1, keepdim=True)
+    print("out: ", x / torch.sqrt(x_sum))
+
+    norm = RMSNorm(normalized_shape=normalized_shape).to(Dtype).cuda()
     print(norm)
 
     base_out = None
     # ---------------------------------
     # pytorch native
     for _ in range(WARE_UP):
-        # torch.nn.functional.layer_norm(input, normalized_shape, weight=None, bias=None, eps=1e-05)
-        torch.nn.functional.layer_norm(x, norm.normalized_shape, weight=norm.weight, bias=norm.bias, eps=1e-05)
+        torch.nn.functional.rms_norm(x, norm.normalized_shape, weight=norm.weight, eps=1e-05)
         
     start = torch.cuda.Event(enable_timing=True)
     end = torch.cuda.Event(enable_timing=True)
     start.record()
     for i in range(ITER):
-        torch_out = torch.nn.functional.layer_norm(x, norm.normalized_shape, weight=norm.weight, bias=norm.bias, eps=1e-05)
+        torch_out = torch.nn.functional.rms_norm(x, norm.normalized_shape, weight=norm.weight, eps=1e-05)
 
     end.record() 
     torch.cuda.synchronize()
