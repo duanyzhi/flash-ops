@@ -6,10 +6,12 @@ from tabulate import tabulate
 
 torch.manual_seed(12138)
 torch.cuda.manual_seed_all(12138) 
+# torch.set_printoptions(sci_mode=False, threshold=float('inf'))
+# torch.set_printoptions(sci_mode=False)
 
 TestInfos = [
     # shape, dtype, bias, device, atol, speedup
-    ((1, 128, 32, 128), torch.half, True, "cuda", 0.04, 0.2),
+    ((1, 128, 32, 64), torch.half, False, "cuda", 0.04, 0.2),
     # ((1, 1024, 1024, 1024), torch.half, True, "cuda", 0.04, 0.2),
     # ((1, 2048, 2048, 2048), torch.half, True, "cuda", 0.04, 0.2),
     # ((1, 4096, 4096, 4096), torch.half, True, "cuda", 0.04, 0.2),
@@ -26,7 +28,7 @@ class Linear(torch.nn.Module):
     def forward(self, x):
         return self.ln(x)
     
-iter = 50
+iter = 1
 
 RESULTS = []
 
@@ -47,10 +49,13 @@ def test_linear(
   x = torch.randn([B, M, K], device=Device, dtype=Dtype)
   
   layer = Linear(K, N, Bias, Dtype, Device)
-
-  print(layer.ln.weight)
-  
-  for _ in range(5):
+#   print("x: 0", x[0, 0:16, 0:16])
+#   print("w: 0", layer.ln.weight[0:32, 0:32])
+#   print("x: 1", x[0, 0:16, 16:32])
+#   print("w: 1", layer.ln.weight[0:32, 0:32])
+#   print("x0 @ w0: ", x[0, 0, 0:16] @ layer.ln.weight[2, 0:16].t())
+#   print("x1 @ w1: ", x[0, 0, 16:32] @ layer.ln.weight[2, 16:32].t())
+  for _ in range(1):
      layer(x)
      _C.linear(x, layer.ln.weight, None)
 
@@ -74,6 +79,7 @@ def test_linear(
   torch_throughput = compute_flops / (torch_time / 1000) / (10 ** 9)
   #print("Torch Throughput: ", torch_throughput, " GFLOPS")
   #print(x)
+  print("-------------------------------------------")
   
   with nvtx.annotate('flash_ops'):
       start_flash = torch.cuda.Event(enable_timing=True)
@@ -89,7 +95,10 @@ def test_linear(
   flash_time = start_flash.elapsed_time(end_flash) / iter
 
   flash_throughput = compute_flops / (flash_time / 1000) / (10 ** 9)
+#   print("o0: ", torch_out.size(), torch_out[0, 0, 0:16], flash_out[0, 0, 0:16])
+#   print("o1: ", torch_out[0, 0, 16:32])
   #print("Flash Throughput: ", flash_throughput, " GFLOPS")
+  print("torch: ", torch_out, "\nflash:", flash_out)
  
   torch.testing.assert_close(torch_out.float(), flash_out.float(), atol=Atol, rtol=Atol)
 
