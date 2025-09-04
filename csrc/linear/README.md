@@ -346,3 +346,5 @@ Flash Throughput:  35715.593380344  GFLOPS
 # multi stage
 
 主要参考: https://github.com/KnowingNothing/MatmulTutorial/tree/main, 重新实现了下便于理解里面的逻辑
+
+![gemm_perf.png](png/gemm_perf.png)
