@@ -342,3 +342,7 @@ Flash Throughput:  35715.593380344  GFLOPS
 ```
 
 4090-fp16理论算力是165 TFLOPS，第一个版本只有torch(底层是cublas)的22%。
+
+# multi stage
+
+主要参考: https://github.com/KnowingNothing/MatmulTutorial/tree/main, 重新实现了下便于理解里面的逻辑
