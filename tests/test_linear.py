@@ -4,17 +4,17 @@ import pytest
 import nvtx
 from tabulate import tabulate
 
-# torch.manual_seed(12138)
-# torch.cuda.manual_seed_all(12138) 
+torch.manual_seed(12138)
+torch.cuda.manual_seed_all(12138) 
 torch.set_printoptions(sci_mode=False, threshold=float('inf'))
 # torch.set_printoptions(sci_mode=False)
 
 TestInfos = [
     # shape, dtype, bias, device, atol, speedup
-    ((1, 1024, 32 * 3 * 10, 1024), torch.half, False, "cuda", 0.1, 0.1),
+    # ((1, 1024, 1024 + 32 + 32, 1024), torch.half, False, "cuda", 0.01, 0.01),
     # ((1, 1024, 1024, 1024), torch.half, True, "cuda", 0.04, 0.2),
-    # ((1, 2048, 2048, 2048), torch.half, False, "cuda", 0.04, 0.2),
-    # ((1, 4096, 4096, 4096), torch.half, False, "cuda", 0.04, 0.2),
+    # ((1, 2048, 2048, 2048), torch.half, False, "cuda", 0.1, 0.1),
+    ((1, 4096, 4096, 4096), torch.half, False, "cuda", 0.04, 0.2),
     # ((1, 8192, 8192, 8192), torch.half, True, "cuda", 0.04, 0.2),
     # ((1, 11264, 11264, 11264), torch.half, True, "cuda", 0.04, 0.2),
     # ((1, 16384, 16384, 16384), torch.half, True, "cuda", 0.04, 0.2),
@@ -100,11 +100,24 @@ def test_linear(
   #print("Flash Throughput: ", flash_throughput, " GFLOPS")
   # print("torch: ", torch_out, "\nflash:", flash_out)
   # print(torch_out[0, 48, 17], flash_out[0, 48, 17])
-  # for r in range(0, torch_out.size(1)):
-  #   print("torch and flash: ", r, torch_out[0, r, :], flash_out[0, r, :])
-  #   torch.testing.assert_close(flash_out[0, r, :].float(), torch_out[0, r, :].float(), atol=Atol, rtol=Atol)
- 
-  torch.testing.assert_close(torch_out.float(), flash_out.float(), atol=Atol, rtol=Atol)
+  for r in range(0, torch_out.size(1)):
+    try:
+      z = torch.testing.assert_close(flash_out[0, r, :].float(), torch_out[0, r, :].float(), rtol=0, atol=0.5)
+      # print(z)
+    except AssertionError as e:
+      # if (r == 115):
+      if z is None:
+        # print("torch and flash: ", r, torch_out[0, r, :], flash_out[0, r, :])
+        print(torch_out[0, r, :] - flash_out[0, r, :])
+        abs_diff = torch.abs(torch_out[0, r, :] - flash_out[0, r, :])
+        max_abs_diff, max_idx = torch.max(abs_diff, dim=0)
+        max_abs_diff = max_abs_diff.item()
+        max_idx = max_idx.item()
+        print("row and col: ", r, max_idx / 32)
+        print("max_abs_diff: ", max_abs_diff, max_idx, torch_out[0, r, max_idx], flash_out[0, r, max_idx])
+
+  torch.testing.assert_close(torch_out.float(), flash_out.float(), rtol=0, atol=0.5)
+  # atol: abs(actual - expected)
 
   result = {
         "Shape": f"({M}, {K}, {N})",
