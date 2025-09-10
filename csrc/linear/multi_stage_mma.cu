@@ -79,7 +79,6 @@ __device__ void load_fragb(half* smemb, nvcuda::wmma::fragment<nvcuda::wmma::mat
   // const int row = threadIdx.y;
   const int col = threadIdx.z;
   int tid = threadIdx.x + threadIdx.y * 32 + threadIdx.z * 2 *32;
-  // printf("debug load fragb : tid %d col %d", tid, col);
 
   half* smemeb_ptr = smemb + ik * 16 + col * 32 * (2 * 16); // WARP_N = 32
   for (int i = 0; i < 2; ++i) {
@@ -116,6 +115,30 @@ __device__ void store2globalc(float* smemc, float* gmemc, int bx, int by, int N)
       gmemc[(by * BM + row) * N + bx * BN + col] = smemc[row * BN + col];
       // gmemc[(by * BM + row) * N + bx * BN + col] = __float2half(smemc[row * BN + col]);
   }
+}
+
+template <int BM, int BN, int BK, int WMMA_M, int WMMA_N, int WMMA_K, int WARP_K>
+__device__ void do_mma(
+  nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, nvcuda::wmma::row_major>* frag_a,
+  nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, nvcuda::wmma::col_major>* frag_b,
+  nvcuda::wmma::fragment<nvcuda::wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float>* frag_c,
+  half* smema, half* smemb, int frag_a_num, int frag_b_num) {
+#pragma unroll
+    for (int ik = 0; ik < BK / WARP_K; ik += 1) {
+      load_fraga<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smema, frag_a, ik);
+      load_fragb<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smemb, frag_b, ik);
+
+#pragma unroll
+      for (int m_index = 0; m_index < frag_a_num; m_index++) {
+#pragma unroll
+        for (int n_index = 0; n_index < frag_b_num; n_index++) {
+          // do mma and sum all ik
+          // if (m_index == 0 && n_index == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
+            nvcuda::wmma::mma_sync(frag_c[m_index * frag_b_num + n_index], frag_a[m_index], frag_b[n_index],
+                                   frag_c[m_index * frag_b_num + n_index]);
+        }
+      }
+    }
 }
 
 template <int WMMA_M, int WMMA_N, int WMMA_K>
@@ -275,9 +298,9 @@ __global__ void multi_stage_mma_half_kernel(
 
   // __syncthreads(); 
   // if (tid == 0) {
-  //  for (int c = 0; c < 4; ++c) {
-  //   for (int i = 0; i < 32; ++i) {
-  //     printf("%f ", __half2float(smemb[i + c * 32]));
+  //  for (int c = 0; c < 16; ++c) {
+  //   for (int i = 0; i < 16; ++i) {
+  //     printf("%f ", __half2float(smema[i + c * 32]));
   //   }
   //   printf("\n");
   //  }
@@ -307,55 +330,30 @@ __global__ void multi_stage_mma_half_kernel(
    * 
    * ***/
   int loop_num = K / BK;
+  // if (tid == 0) {
+  //   printf("loop= %d, loop % 3 = %d \n", loop_num, loop_num % 3);
+  // }
+
 #pragma unroll
   for (int lk = 0; lk < loop_num - 3; lk = lk + 3) { // do loop for lk, lk + 1, lk + 2
-  // for (int lk = 0; lk < 1; ++lk) {
     // for loop for mma
     // one wrap 64x64x16, one mma 16x16x16
     asm volatile("cp.async.wait_group %0;\n" ::"n"(2));  // wait smema [smema, smema2, smem3]
     __syncthreads();
-#pragma unroll
-    for (int ik = 0; ik < BK / WARP_K; ik += 1) {
-      load_fraga<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smema, frag_a, ik);
-      load_fragb<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smemb, frag_b, ik);
 
-#pragma unroll
-      for (int m_index = 0; m_index < frag_a_num; m_index++) {
-#pragma unroll
-        for (int n_index = 0; n_index < frag_b_num; n_index++) {
-          // do mma and sum all ik
-          // if (m_index == 0 && n_index == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
-            nvcuda::wmma::mma_sync(frag_c[m_index * frag_b_num + n_index], frag_a[m_index], frag_b[n_index],
-                                   frag_c[m_index * frag_b_num + n_index]);
-        }
-      }
-    }
+    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema, smemb, frag_a_num, frag_b_num);
 
     // do lk + 2 load
-    load_smema<BM, BN, BK>(smema, a + load_block_a_gmem_addr, K, lk + 3);
-    load_smemb<BM, BN, BK>(smemb, b + load_block_b_gmem_addr, K, lk + 3);
-    asm volatile("cp.async.commit_group;\n" ::);
-
+    if (lk + 3 < loop_num) {
+      load_smema<BM, BN, BK>(smema, a + load_block_a_gmem_addr, K, lk + 3);
+      load_smemb<BM, BN, BK>(smemb, b + load_block_b_gmem_addr, K, lk + 3);
+      asm volatile("cp.async.commit_group;\n" ::);
+    }
     asm volatile("cp.async.wait_group %0;\n" ::"n"(2));  // wait smema2 // wait smema [smema2, smem3, smema]
     __syncthreads();
 
     // stage 2
-    #pragma unroll
-    for (int ik = 0; ik < BK / WARP_K; ik += 1) {
-      load_fraga<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smema2, frag_a, ik);
-      load_fragb<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smemb2, frag_b, ik);
-
-#pragma unroll
-      for (int m_index = 0; m_index < frag_a_num; m_index++) {
-#pragma unroll
-        for (int n_index = 0; n_index < frag_b_num; n_index++) {
-          // do mma and sum all ik
-          // if (m_index == 0 && n_index == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
-          nvcuda::wmma::mma_sync(frag_c[m_index * frag_b_num + n_index], frag_a[m_index], frag_b[n_index],
-                                 frag_c[m_index * frag_b_num + n_index]);
-        }
-      }
-    }
+    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema2, smemb2, frag_a_num, frag_b_num);
 
     // do lk + 3 load
     if (lk + 4 < loop_num) {
@@ -368,22 +366,7 @@ __global__ void multi_stage_mma_half_kernel(
     __syncthreads();
 
     // stage 3
-    #pragma unroll
-    for (int ik = 0; ik < BK / WARP_K; ik += 1) {
-      load_fraga<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smema3, frag_a, ik);
-      load_fragb<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smemb3, frag_b, ik);
-
-#pragma unroll
-      for (int m_index = 0; m_index < frag_a_num; m_index++) {
-#pragma unroll
-        for (int n_index = 0; n_index < frag_b_num; n_index++) {
-          // do mma and sum all ik
-          // if (m_index == 0 && n_index == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
-          nvcuda::wmma::mma_sync(frag_c[m_index * frag_b_num + n_index], frag_a[m_index], frag_b[n_index],
-                                 frag_c[m_index * frag_b_num + n_index]);
-        }
-      }
-    }
+    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema3, smemb3, frag_a_num, frag_b_num);
 
     // do lk + 4 load
     if (lk + 5 < loop_num) {
@@ -393,67 +376,38 @@ __global__ void multi_stage_mma_half_kernel(
     }
   }
 
-  { 
+  if (loop_num % 3 == 0) { 
     asm volatile("cp.async.wait_group %0;\n" ::"n"(2));  // wait smema [smema, smema2, smema3]
     __syncthreads();
-#pragma unroll
-    for (int ik = 0; ik < BK / WARP_K; ik += 1) {
-      load_fraga<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smema, frag_a, ik);
-      load_fragb<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smemb, frag_b, ik);
-
-#pragma unroll
-      for (int m_index = 0; m_index < frag_a_num; m_index++) {
-#pragma unroll
-        for (int n_index = 0; n_index < frag_b_num; n_index++) {
-          // do mma and sum all ik
-          // if (m_index == 0 && n_index == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
-          nvcuda::wmma::mma_sync(frag_c[m_index * frag_b_num + n_index], frag_a[m_index], frag_b[n_index],
-                                 frag_c[m_index * frag_b_num + n_index]);
-        }
-      }
-    }
+    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema, smemb, frag_a_num, frag_b_num);
 
     // last 2
     asm volatile("cp.async.wait_group %0;\n" ::"n"(1));
     __syncthreads();
-#pragma unroll
-    for (int ik = 0; ik < BK / WARP_K; ik += 1) {
-      load_fraga<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smema2, frag_a, ik);
-      load_fragb<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smemb2, frag_b, ik);
-
-#pragma unroll
-      for (int m_index = 0; m_index < frag_a_num; m_index++) {
-#pragma unroll
-        for (int n_index = 0; n_index < frag_b_num; n_index++) {
-          // do mma and sum all ik
-          // if (m_index == 0 && n_index == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
-          nvcuda::wmma::mma_sync(frag_c[m_index * frag_b_num + n_index], frag_a[m_index], frag_b[n_index],
-                                 frag_c[m_index * frag_b_num + n_index]);
-        }
-      }
-    }
+    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema2, smemb2, frag_a_num, frag_b_num);
     
     asm volatile("cp.async.wait_group %0;\n" ::"n"(0));
     __syncthreads();
-#pragma unroll
-    for (int ik = 0; ik < BK / WARP_K; ik += 1) {
-      load_fraga<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smema3, frag_a, ik);
-      load_fragb<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smemb3, frag_b, ik);
+    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema3, smemb3, frag_a_num, frag_b_num);
 
-#pragma unroll
-      for (int m_index = 0; m_index < frag_a_num; m_index++) {
-#pragma unroll
-        for (int n_index = 0; n_index < frag_b_num; n_index++) {
-          // do mma and sum all ik
-          // if (m_index == 0 && n_index == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
-          nvcuda::wmma::mma_sync(frag_c[m_index * frag_b_num + n_index], frag_a[m_index], frag_b[n_index],
-                                 frag_c[m_index * frag_b_num + n_index]);
-        }
-      }
-    }
+  } else if (loop_num % 3 == 1) {
+    asm volatile("cp.async.wait_group %0;\n" ::"n"(0));
+    __syncthreads();
+    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema, smemb, frag_a_num, frag_b_num);
+  } else if (loop_num % 3 == 2) {
+    asm volatile("cp.async.wait_group %0;\n" ::"n"(1));
+    __syncthreads();
+    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema, smemb, frag_a_num, frag_b_num);
     
+    asm volatile("cp.async.wait_group %0;\n" ::"n"(0));
+    __syncthreads();
+    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema2, smemb2, frag_a_num, frag_b_num);
 
+  } else {
+    printf("error code.");
   }
+
+  __syncthreads(); 
 
   // store 
   store_fragc<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smemc, frag_c, frag_a_num, frag_b_num);
