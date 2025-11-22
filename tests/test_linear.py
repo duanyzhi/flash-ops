@@ -6,13 +6,13 @@ from tabulate import tabulate
 
 torch.manual_seed(12138)
 torch.cuda.manual_seed_all(12138) 
-torch.set_printoptions(sci_mode=False, threshold=float('inf'))
+# torch.set_printoptions(sci_mode=False, threshold=float('inf'))
 # torch.set_printoptions(sci_mode=False)
 
 TestInfos = [
     # shape, dtype, bias, device, atol, speedup
     # ((1, 1024, 1024 + 32 + 32, 1024), torch.half, False, "cuda", 0.01, 0.01),
-    ((1, 1024, 1024, 1024), torch.half, False, "cuda", 0.04, 0.2),
+    ((1, 2048, 2048, 2048), torch.half, False, "cuda", 0.04, 0.2),
     # ((1, 2048, 2048, 2048), torch.half, False, "cuda", 0.1, 0.1),
     # ((1, 128, 128, 128), torch.half, False, "cuda", 0.04, 0.2),
     # ((1, 8192, 8192, 8192), torch.half, True, "cuda", 0.04, 0.2),
@@ -117,6 +117,7 @@ def test_linear(
   #       print("row and col: ", r, max_idx / 32)
   #       print("max_abs_diff: ", max_abs_diff, max_idx, torch_out[0, r, max_idx], flash_out[0, r, max_idx])
 
+  print(torch_out, flash_out)
   # torch.testing.assert_close(torch_out.float(), flash_out.float(), rtol=0, atol=0.5)
   # atol: abs(actual - expected)
 

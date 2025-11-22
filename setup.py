@@ -64,8 +64,8 @@ def build_for_cuda():
             "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
             "-U__CUDA_NO_BFLOAT162_OPERATORS__",
             "-U__CUDA_NO_BFLOAT162_CONVERSIONS__",
-            "-Wno-unused-value"
-            # "-save-temps"
+            "-Wno-unused-value",
+            "-save-temps"
             # "-DCUTLASS_DEBUG_TRACE_LEVEL=1
        ],
     }
