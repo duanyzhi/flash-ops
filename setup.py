@@ -48,10 +48,11 @@ def build_for_cuda():
     NVCC_FLAGS = {
        'nvcc' : [
          '--threads={}'.format(max_jobs),
-         '-gencode', 'arch=compute_89,code=sm_89',  # Specify compute capability
+        #  '-gencode', 'arch=compute_89,code=sm_89',  # Specify compute capability
          '-gencode', 'arch=compute_80,code=sm_80',
-         # '--ptxas-options=-v',  # Verbose PTX assembly output
-         '--use_fast_math'
+         '--ptxas-options=-v',  # Verbose PTX assembly output
+         '--use_fast_math',
+         '-Xptxas',
         ],
        "cxx": [
             "-std=c++17",
@@ -103,10 +104,6 @@ def build_for_cuda():
         except ImportError:
             cudnn = None
 
-        if cudnn is not None:
-            cudnn_dir = os.path.dirname(cudnn.__file__)
-            print("Using CUDNN from {}".format(cudnn_dir))
-            include_dirs.append(os.path.join(cudnn_dir, "include"))
 
         try:
             from nvidia import cublas
@@ -151,7 +148,7 @@ setup(
     author="duanyzhi",
     packages=find_packages(exclude=("release")),
     install_requires=[
-        'torch==2.6.0',
+        #'torch==2.8.0',
     ],
     ext_modules = ext_modules,
     cmdclass={

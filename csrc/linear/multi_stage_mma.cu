@@ -236,7 +236,7 @@ __device__ void print_fragc(nvcuda::wmma::fragment<nvcuda::wmma::accumulator, WM
       row = j < 2 ? groupID : groupID + 8;
       col = (threadID_in_group * 2) + (j & 0x1) + 8;
     }
-    // printf("tid = %d row col = (%d, %d), v = %f \n", tid, row, col, frag.x[i]);
+    printf("tid = %d row col = (%d, %d), v = %f \n", tid, row, col, frag.x[i]);
 
     // int row_smem = m_index * WMMA_M + row;
     // int col_smem = n_index * WMMA_N + col;
@@ -267,17 +267,18 @@ __global__ void multi_stage_mma_half_kernel(
   int load_block_a_gmem_addr = by * BM * K;
   int load_block_b_gmem_addr = bx * BN * K;
 
-  constexpr int smem_size = (BM * BK + BN * BK) * STAGE;
+  constexpr int smem_num = (BM * BK + BN * BK) * STAGE > 2 * BM * BN ? (BM * BK + BN * BK) * STAGE : 2 * BM * BN; // 2 for float, fix
+  constexpr size_t smem_size = smem_num * sizeof(half);
 
-  // static_assert(smem_size >= (48 << 10) && "smem_num must be small 49152");
+  static_assert(smem_size < (48 << 10) && "smem_num must be small 49152 bytes.");
 
-  __shared__ half smem[smem_size];
+  __shared__ half smem[smem_num];
   half* smema = smem;
   half* smemb = smem + BM * BK;
-  half* smema2 = smemb + BN * BK;
-  half* smemb2 = smema2 + BM * BK;
-  half* smema3 = smemb2 + BN * BK;
-  half* smemb3 = smema3 + BM * BK;
+  // half* smema2 = smemb + BN * BK;
+  // half* smemb2 = smema2 + BM * BK;
+  // half* smema3 = smemb2 + BN * BK;
+  // half* smemb3 = smema3 + BM * BK;
   float* smemc = reinterpret_cast<float *>(smem); // 32768
 
   // prologue
@@ -286,15 +287,15 @@ __global__ void multi_stage_mma_half_kernel(
 
   asm volatile("cp.async.commit_group;\n" ::);
 
-  load_smema<BM, BN, BK>(smema2, a + load_block_a_gmem_addr, K, 1);
-  load_smemb<BM, BN, BK>(smemb2, b + load_block_b_gmem_addr, K, 1);
+  // load_smema<BM, BN, BK>(smema2, a + load_block_a_gmem_addr, K, 1);
+  // load_smemb<BM, BN, BK>(smemb2, b + load_block_b_gmem_addr, K, 1);
 
-  asm volatile("cp.async.commit_group;\n" ::);
+  // asm volatile("cp.async.commit_group;\n" ::);
 
-  load_smema<BM, BN, BK>(smema3, a + load_block_a_gmem_addr, K, 2);
-  load_smemb<BM, BN, BK>(smemb3, b + load_block_b_gmem_addr, K, 2);
+  // load_smema<BM, BN, BK>(smema3, a + load_block_a_gmem_addr, K, 2);
+  // load_smemb<BM, BN, BK>(smemb3, b + load_block_b_gmem_addr, K, 2);
 
-  asm volatile("cp.async.commit_group;\n" ::);
+  // asm volatile("cp.async.commit_group;\n" ::);
 
   // __syncthreads(); 
   // if (tid == 0) {
@@ -305,7 +306,7 @@ __global__ void multi_stage_mma_half_kernel(
   //   printf("\n");
   //  }
   // }
-  // // print_smem(smema, BM, BK);
+  // print_smem(smema, BM, BK);
 
   constexpr int frag_a_num = WARP_M / WMMA_M;  // 64 / 16 = 4
   constexpr int frag_b_num = WARP_N / WMMA_N;  // 32 / 16 = 2
@@ -335,80 +336,86 @@ __global__ void multi_stage_mma_half_kernel(
   // }
 
 #pragma unroll
-  for (int lk = 0; lk < loop_num - 3; lk = lk + 3) { // do loop for lk, lk + 1, lk + 2
+  for (int lk = 0; lk < loop_num; lk = lk + 1) { // do loop for lk, lk + 1, lk + 2
     // for loop for mma
     // one wrap 64x64x16, one mma 16x16x16
-    asm volatile("cp.async.wait_group %0;\n" ::"n"(2));  // wait smema [smema, smema2, smem3]
+    asm volatile("cp.async.wait_group %0;\n" ::"n"(0));  // wait smema [smema, smema2, smem3]
     __syncthreads();
 
     do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema, smemb, frag_a_num, frag_b_num);
 
     // do lk + 2 load
-    if (lk + 3 < loop_num) {
-      load_smema<BM, BN, BK>(smema, a + load_block_a_gmem_addr, K, lk + 3);
-      load_smemb<BM, BN, BK>(smemb, b + load_block_b_gmem_addr, K, lk + 3);
-      asm volatile("cp.async.commit_group;\n" ::);
-    }
-    asm volatile("cp.async.wait_group %0;\n" ::"n"(2));  // wait smema2 // wait smema [smema2, smem3, smema]
-    __syncthreads();
-
-    // stage 2
-    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema2, smemb2, frag_a_num, frag_b_num);
-
-    // do lk + 3 load
-    if (lk + 4 < loop_num) {
-      load_smema<BM, BN, BK>(smema2, a + load_block_a_gmem_addr, K, lk + 4);
-      load_smemb<BM, BN, BK>(smemb2, b + load_block_b_gmem_addr, K, lk + 4);
+    if (lk + 1 < loop_num) {
+      load_smema<BM, BN, BK>(smema, a + load_block_a_gmem_addr, K, lk + 1);
+      load_smemb<BM, BN, BK>(smemb, b + load_block_b_gmem_addr, K, lk + 1);
       asm volatile("cp.async.commit_group;\n" ::);
     }
 
-    asm volatile("cp.async.wait_group %0;\n" ::"n"(2));  // wait smema3 // wait smema [smem3, smema, smema2]
-    __syncthreads();
+    // // next stage
+    // asm volatile("cp.async.wait_group %0;\n" ::"n"(1));  // wait smema2 // wait smema [smema2, smem3, smema]
+    // __syncthreads();
 
-    // stage 3
-    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema3, smemb3, frag_a_num, frag_b_num);
+    // // stage 2
+    // do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema2, smemb2, frag_a_num, frag_b_num);
 
-    // do lk + 4 load
-    if (lk + 5 < loop_num) {
-      load_smema<BM, BN, BK>(smema3, a + load_block_a_gmem_addr, K, lk + 5);
-      load_smemb<BM, BN, BK>(smemb3, b + load_block_b_gmem_addr, K, lk + 5);
-      asm volatile("cp.async.commit_group;\n" ::);
-    }
+    // // do lk + 3 load
+    // if (lk + 3 < loop_num) {
+    //   load_smema<BM, BN, BK>(smema2, a + load_block_a_gmem_addr, K, lk + 3);
+    //   load_smemb<BM, BN, BK>(smemb2, b + load_block_b_gmem_addr, K, lk + 3);
+    //   asm volatile("cp.async.commit_group;\n" ::);
+    // }
+
+    // asm volatile("cp.async.wait_group %0;\n" ::"n"(2));  // wait smema3 // wait smema [smem3, smema, smema2]
+    // __syncthreads();
+
+    // // stage 3
+    // do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema3, smemb3, frag_a_num, frag_b_num);
+
+    // // do lk + 4 load
+    // if (lk + 5 < loop_num) {
+    //   load_smema<BM, BN, BK>(smema3, a + load_block_a_gmem_addr, K, lk + 5);
+    //   load_smemb<BM, BN, BK>(smemb3, b + load_block_b_gmem_addr, K, lk + 5);
+    //   asm volatile("cp.async.commit_group;\n" ::);
+    // }
   }
 
-  if (loop_num % 3 == 0) { 
-    asm volatile("cp.async.wait_group %0;\n" ::"n"(2));  // wait smema [smema, smema2, smema3]
-    __syncthreads();
-    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema, smemb, frag_a_num, frag_b_num);
+  // if (loop_num % 2 == 0) { 
+  //   asm volatile("cp.async.wait_group %0;\n" ::"n"(1));  // wait smema [smema, smema2, smema3]
+  //   __syncthreads();
+  //   do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema, smemb, frag_a_num, frag_b_num);
 
-    // last 2
-    asm volatile("cp.async.wait_group %0;\n" ::"n"(1));
-    __syncthreads();
-    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema2, smemb2, frag_a_num, frag_b_num);
+  //   // last 2
+  //   asm volatile("cp.async.wait_group %0;\n" ::"n"(0));
+  //   __syncthreads();
+  //   do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema2, smemb2, frag_a_num, frag_b_num);
     
-    asm volatile("cp.async.wait_group %0;\n" ::"n"(0));
-    __syncthreads();
-    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema3, smemb3, frag_a_num, frag_b_num);
+  //   // asm volatile("cp.async.wait_group %0;\n" ::"n"(0));
+  //   // __syncthreads();
+  //   // do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema3, smemb3, frag_a_num, frag_b_num);
 
-  } else if (loop_num % 3 == 1) {
-    asm volatile("cp.async.wait_group %0;\n" ::"n"(0));
-    __syncthreads();
-    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema, smemb, frag_a_num, frag_b_num);
-  } else if (loop_num % 3 == 2) {
-    asm volatile("cp.async.wait_group %0;\n" ::"n"(1));
-    __syncthreads();
-    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema, smemb, frag_a_num, frag_b_num);
+  // } else if (loop_num % 2 == 1) {
+  //   asm volatile("cp.async.wait_group %0;\n" ::"n"(0));
+  //   __syncthreads();
+  //   do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema, smemb, frag_a_num, frag_b_num);
+  // // } else if (loop_num % 3 == 2) {
+  // //   asm volatile("cp.async.wait_group %0;\n" ::"n"(1));
+  // //   __syncthreads();
+  // //   do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema, smemb, frag_a_num, frag_b_num);
     
-    asm volatile("cp.async.wait_group %0;\n" ::"n"(0));
-    __syncthreads();
-    do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema2, smemb2, frag_a_num, frag_b_num);
+  // //   asm volatile("cp.async.wait_group %0;\n" ::"n"(0));
+  // //   __syncthreads();
+  // //   do_mma<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, WARP_K>(frag_a, frag_b, frag_c, smema2, smemb2, frag_a_num, frag_b_num);
 
-  } else {
-    printf("error code.");
-  }
+  // } else {
+  //   printf("error code.");
+  // }
 
   __syncthreads(); 
 
+  // {
+  //   // debug
+  //   print_fragc<WMMA_M, WMMA_N, WMMA_K>(frag_c[1], smemc);
+  // }
   // store 
   store_fragc<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(smemc, frag_c, frag_a_num, frag_b_num);
   __syncthreads();
@@ -451,6 +458,13 @@ at::Tensor multi_stage_mma_forward(const at::Tensor & input, const at::Tensor & 
     // one warp process 64 * 64 * 16, so need 4 warp
     // one warp need 64 / 16 * 64 / 16 * 16 / 16 = 16 time wmma
 
+    // cudaDeviceProp prop;
+    // cudaGetDeviceProperties(&prop, 0);
+
+    // // 每个Block最大可用共享内存（静态+动态）
+    // printf("每个Block最大共享内存: %zu byte\n", 
+    //        prop.sharedMemPerBlock);
+
     constexpr int BM = 128;
     constexpr int BN = 64;
     constexpr int BK = 32;
@@ -465,13 +479,11 @@ at::Tensor multi_stage_mma_forward(const at::Tensor & input, const at::Tensor & 
     constexpr int WMMA_N = 16;
     constexpr int WMMA_K = 16;
     constexpr int thread_num = 32 * 4; // 4 warp
-    constexpr int stage = 3; // 3 pingpong pipeline
+    constexpr int stage = 2; // 3 pingpong pipeline
 
     dim3 GridDim(DIV_UP(N, BN), DIV_UP(M, BM));
     dim3 BlockDim(32, 2, 2);
-    // float* c_ptr = reinterpret_cast<float*>(output.data_ptr());
 
-    // using fragement_a_type = nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, nvcuda::wmma::row_major>;
     multi_stage_mma_half_kernel<BM, BN, BK, WARP_M, WARP_N, WARP_K, WMMA_M, WMMA_N, WMMA_K, thread_num, stage>
         <<<GridDim, BlockDim, 0, stream>>>(
                reinterpret_cast<__half*>(input.data_ptr<at::Half>()),
