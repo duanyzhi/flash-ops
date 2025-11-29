@@ -6,13 +6,13 @@ from tabulate import tabulate
 
 torch.manual_seed(12138)
 torch.cuda.manual_seed_all(12138) 
-# torch.set_printoptions(sci_mode=False, threshold=float('inf'))
-# torch.set_printoptions(sci_mode=False)
+torch.set_printoptions(sci_mode=False, threshold=float('inf'))
+torch.set_printoptions(sci_mode=False)
 
 TestInfos = [
     # shape, dtype, bias, device, atol, speedup
     # ((1, 1024, 1024 + 32 + 32, 1024), torch.half, False, "cuda", 0.01, 0.01),
-    ((1, 2048, 2048, 2048), torch.half, False, "cuda", 0.04, 0.2),
+    ((1, 128, 32, 64), torch.half, False, "cuda", 0.04, 0.2),
     # ((1, 2048, 2048, 2048), torch.half, False, "cuda", 0.1, 0.1),
     # ((1, 128, 128, 128), torch.half, False, "cuda", 0.04, 0.2),
     # ((1, 8192, 8192, 8192), torch.half, True, "cuda", 0.04, 0.2),
@@ -28,7 +28,7 @@ class Linear(torch.nn.Module):
     def forward(self, x):
         return self.ln(x)
     
-iter = 100
+iter = 1
 
 RESULTS = []
 
@@ -46,18 +46,23 @@ def test_linear(
   B, M, K, N = Shape
   line.append((M, K, N))
   
-  x = torch.randn([B, M, K], device=Device, dtype=Dtype)
+  x = torch.randn([M, K], device=Device, dtype=Dtype)
+  # print(x[0, 0], x[0, 1], x[8, 0], x[8, 1])
+  # print(x)
+
   
   layer = Linear(K, N, Bias, Dtype, Device)
+  # print(layer.ln.weight)
+
   # print("x: 0", x[0, 0:16, 0:16])
   # print("w: 0", layer.ln.weight[0:32, 0:32])
 #   print("x: 1", x[0, 0:16, 16:32])
 #   print("w: 1", layer.ln.weight[0:32, 0:32])
 #   print("x0 @ w0: ", x[0, 0, 0:16] @ layer.ln.weight[2, 0:16].t())
 #   print("x1 @ w1: ", x[0, 0, 16:32] @ layer.ln.weight[2, 16:32].t())
-  for _ in range(10):
-     layer(x)
-     _C.linear(x, layer.ln.weight, None)
+  # for _ in range(1):
+  #    layer(x)
+  #    _C.linear(x, layer.ln.weight, None)
 
   torch.cuda.synchronize()
 
@@ -71,6 +76,7 @@ def test_linear(
       end.record() 
       torch.cuda.synchronize()
   #print("avg pytorch linear sync time: ", start.elapsed_time(end) / iter, " ms.")
+  # print(torch_out)
 
   compute_flops = M * (K + (K - 1)) * N
   #print("FLOPS: ", compute_flops)
@@ -90,7 +96,8 @@ def test_linear(
 
       end_flash.record() 
       torch.cuda.synchronize()
-  #print("avg flash linear sync time: ", start_flash.elapsed_time(end_flash) / iter, " ms.")
+  #print("avg flash  linear sync time: ", start_flash.elapsed_time(end_flash) / iter, " ms.")
+  # print(flash_out)
 
   flash_time = start_flash.elapsed_time(end_flash) / iter
 
@@ -117,7 +124,7 @@ def test_linear(
   #       print("row and col: ", r, max_idx / 32)
   #       print("max_abs_diff: ", max_abs_diff, max_idx, torch_out[0, r, max_idx], flash_out[0, r, max_idx])
 
-  print(torch_out, flash_out)
+  # print(torch_out, flash_out)
   # torch.testing.assert_close(torch_out.float(), flash_out.float(), rtol=0, atol=0.5)
   # atol: abs(actual - expected)
 
