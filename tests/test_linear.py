@@ -9,11 +9,17 @@ torch.cuda.manual_seed_all(12138)
 torch.set_printoptions(sci_mode=False, threshold=float('inf'))
 torch.set_printoptions(sci_mode=False)
 
+torch.set_printoptions(
+    precision=4,      # 小数点后4位
+    linewidth=200,    # 行宽，确保不换行
+    sci_mode=False    # 禁用科学计数法
+)
+
 TestInfos = [
     # shape, dtype, bias, device, atol, speedup
     # ((1, 1024, 1024 + 32 + 32, 1024), torch.half, False, "cuda", 0.01, 0.01),
-    ((1, 128, 32, 64), torch.half, False, "cuda", 0.04, 0.2),
-    # ((1, 2048, 2048, 2048), torch.half, False, "cuda", 0.1, 0.1),
+    # ((1, 128, 128, 32), torch.half, False, "cuda", 0.04, 0.2),
+    ((1, 2048, 2048, 2048), torch.half, False, "cuda", 0.1, 0.1),
     # ((1, 128, 128, 128), torch.half, False, "cuda", 0.04, 0.2),
     # ((1, 8192, 8192, 8192), torch.half, True, "cuda", 0.04, 0.2),
     # ((1, 11264, 11264, 11264), torch.half, True, "cuda", 0.04, 0.2),
@@ -28,7 +34,7 @@ class Linear(torch.nn.Module):
     def forward(self, x):
         return self.ln(x)
     
-iter = 1
+iter = 100
 
 RESULTS = []
 
@@ -43,7 +49,7 @@ def test_linear(
   #print("=="*30)
   #print(Infos)
   line = []
-  B, M, K, N = Shape
+  B, M, N, K = Shape
   line.append((M, K, N))
   
   x = torch.randn([M, K], device=Device, dtype=Dtype)
@@ -64,6 +70,11 @@ def test_linear(
   #    layer(x)
   #    _C.linear(x, layer.ln.weight, None)
 
+ ## =============================
+  # wareup
+  for _ in range(20):
+      torch_out = layer(x)
+
   torch.cuda.synchronize()
 
   with nvtx.annotate('torch_linear'):
@@ -76,7 +87,7 @@ def test_linear(
       end.record() 
       torch.cuda.synchronize()
   #print("avg pytorch linear sync time: ", start.elapsed_time(end) / iter, " ms.")
-  # print(torch_out)
+  # print(torch_out[0])
 
   compute_flops = M * (K + (K - 1)) * N
   #print("FLOPS: ", compute_flops)
@@ -85,8 +96,12 @@ def test_linear(
   torch_throughput = compute_flops / (torch_time / 1000) / (10 ** 9)
   #print("Torch Throughput: ", torch_throughput, " GFLOPS")
   #print(x)
-  print("-------------------------------------------")
-  
+
+#   print("-------------------------------------------")
+  for _ in range(20):
+      _C.linear(x, layer.ln.weight, layer.ln.bias)
+  torch.cuda.synchronize()
+
   with nvtx.annotate('flash_ops'):
       start_flash = torch.cuda.Event(enable_timing=True)
       end_flash = torch.cuda.Event(enable_timing=True)
@@ -97,11 +112,14 @@ def test_linear(
       end_flash.record() 
       torch.cuda.synchronize()
   #print("avg flash  linear sync time: ", start_flash.elapsed_time(end_flash) / iter, " ms.")
-  # print(flash_out)
+  # for i in range(1):
 
   flash_time = start_flash.elapsed_time(end_flash) / iter
 
   flash_throughput = compute_flops / (flash_time / 1000) / (10 ** 9)
+
+  print(torch_out[0:16, 0:16], flash_out[0:16, 0:16])
+  torch.testing.assert_close(torch_out, flash_out, rtol=0.1, atol=0.1)
 #   print("o0: ", torch_out.size(), torch_out[0, 0, 0:16], flash_out[0, 0, 0:16])
 #   print("o1: ", torch_out[0, 0, 16:32])
   #print("Flash Throughput: ", flash_throughput, " GFLOPS")

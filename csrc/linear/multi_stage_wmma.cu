@@ -489,6 +489,7 @@ at::Tensor multi_stage_wmma_forward(const at::Tensor & input, const at::Tensor &
     // // 每个Block最大可用共享内存（静态+动态）
     // printf("每个Block最大共享内存: %zu byte\n", 
     //        prop.sharedMemPerBlock);
+    // printf("multi stage wmma.");
 
     constexpr int BM = 128;
     constexpr int BN = 64;
