@@ -48,10 +48,11 @@ def build_for_cuda():
     NVCC_FLAGS = {
        'nvcc' : [
          '--threads={}'.format(max_jobs),
-         '-gencode', 'arch=compute_89,code=sm_89',  # Specify compute capability
+        #  '-gencode', 'arch=compute_89,code=sm_89',  # Specify compute capability
          '-gencode', 'arch=compute_80,code=sm_80',
-         # '--ptxas-options=-v',  # Verbose PTX assembly output
-         '--use_fast_math'
+         '--ptxas-options=-v',  # Verbose PTX assembly output
+         '--use_fast_math',
+         '-Xptxas',
         ],
        "cxx": [
             "-std=c++17",
@@ -63,8 +64,8 @@ def build_for_cuda():
             "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
             "-U__CUDA_NO_BFLOAT162_OPERATORS__",
             "-U__CUDA_NO_BFLOAT162_CONVERSIONS__",
-            "-Wno-unused-value"
-            # "-save-temps"
+            "-Wno-unused-value",
+            "-save-temps"
             # "-DCUTLASS_DEBUG_TRACE_LEVEL=1
        ],
     }
@@ -90,7 +91,7 @@ def build_for_cuda():
             os.path.join("csrc", "norm", "layernorm.cu"),
             os.path.join("csrc", "norm", "rmsnorm.cu"),
             os.path.join("csrc", "linear", "gemm_mma.cu"),
-            os.path.join("csrc", "linear", "multi_stage_mma.cu"),
+            os.path.join("csrc", "linear", "multi_stage_mma_v1.cu"),
             os.path.join("csrc", "linear", "linear.cpp"),
         ]
     )
@@ -103,10 +104,6 @@ def build_for_cuda():
         except ImportError:
             cudnn = None
 
-        if cudnn is not None:
-            cudnn_dir = os.path.dirname(cudnn.__file__)
-            print("Using CUDNN from {}".format(cudnn_dir))
-            include_dirs.append(os.path.join(cudnn_dir, "include"))
 
         try:
             from nvidia import cublas
@@ -151,7 +148,7 @@ setup(
     author="duanyzhi",
     packages=find_packages(exclude=("release")),
     install_requires=[
-        'torch==2.6.0',
+        #'torch==2.8.0',
     ],
     ext_modules = ext_modules,
     cmdclass={

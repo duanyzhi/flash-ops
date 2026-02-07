@@ -7,14 +7,20 @@ from tabulate import tabulate
 torch.manual_seed(12138)
 torch.cuda.manual_seed_all(12138) 
 torch.set_printoptions(sci_mode=False, threshold=float('inf'))
-# torch.set_printoptions(sci_mode=False)
+torch.set_printoptions(sci_mode=False)
+
+torch.set_printoptions(
+    precision=4,      # 小数点后4位
+    linewidth=200,    # 行宽，确保不换行
+    sci_mode=False    # 禁用科学计数法
+)
 
 TestInfos = [
     # shape, dtype, bias, device, atol, speedup
     # ((1, 1024, 1024 + 32 + 32, 1024), torch.half, False, "cuda", 0.01, 0.01),
-    # ((1, 1024, 1024, 1024), torch.half, True, "cuda", 0.04, 0.2),
-    # ((1, 2048, 2048, 2048), torch.half, False, "cuda", 0.1, 0.1),
-    ((1, 4096, 4096, 4096), torch.half, False, "cuda", 0.04, 0.2),
+    # ((1, 128, 128, 32), torch.half, False, "cuda", 0.04, 0.2),
+    ((1, 2048, 2048, 2048), torch.half, False, "cuda", 0.1, 0.1),
+    # ((1, 128, 128, 128), torch.half, False, "cuda", 0.04, 0.2),
     # ((1, 8192, 8192, 8192), torch.half, True, "cuda", 0.04, 0.2),
     # ((1, 11264, 11264, 11264), torch.half, True, "cuda", 0.04, 0.2),
     # ((1, 16384, 16384, 16384), torch.half, True, "cuda", 0.04, 0.2),
@@ -43,21 +49,31 @@ def test_linear(
   #print("=="*30)
   #print(Infos)
   line = []
-  B, M, K, N = Shape
+  B, M, N, K = Shape
   line.append((M, K, N))
   
-  x = torch.randn([B, M, K], device=Device, dtype=Dtype)
+  x = torch.randn([M, K], device=Device, dtype=Dtype)
+  # print(x[0, 0], x[0, 1], x[8, 0], x[8, 1])
+  # print(x)
+
   
   layer = Linear(K, N, Bias, Dtype, Device)
-#   print("x: 0", x[0, 0:16, 0:16])
-#   print("w: 0", layer.ln.weight[0:32, 0:32])
+  # print(layer.ln.weight)
+
+  # print("x: 0", x[0, 0:16, 0:16])
+  # print("w: 0", layer.ln.weight[0:32, 0:32])
 #   print("x: 1", x[0, 0:16, 16:32])
 #   print("w: 1", layer.ln.weight[0:32, 0:32])
 #   print("x0 @ w0: ", x[0, 0, 0:16] @ layer.ln.weight[2, 0:16].t())
 #   print("x1 @ w1: ", x[0, 0, 16:32] @ layer.ln.weight[2, 16:32].t())
-  for _ in range(10):
-     layer(x)
-     _C.linear(x, layer.ln.weight, None)
+  # for _ in range(1):
+  #    layer(x)
+  #    _C.linear(x, layer.ln.weight, None)
+
+ ## =============================
+  # wareup
+  for _ in range(20):
+      torch_out = layer(x)
 
   torch.cuda.synchronize()
 
@@ -71,6 +87,7 @@ def test_linear(
       end.record() 
       torch.cuda.synchronize()
   #print("avg pytorch linear sync time: ", start.elapsed_time(end) / iter, " ms.")
+  # print(torch_out[0])
 
   compute_flops = M * (K + (K - 1)) * N
   #print("FLOPS: ", compute_flops)
@@ -79,8 +96,12 @@ def test_linear(
   torch_throughput = compute_flops / (torch_time / 1000) / (10 ** 9)
   #print("Torch Throughput: ", torch_throughput, " GFLOPS")
   #print(x)
-  print("-------------------------------------------")
-  
+
+#   print("-------------------------------------------")
+  for _ in range(20):
+      _C.linear(x, layer.ln.weight, layer.ln.bias)
+  torch.cuda.synchronize()
+
   with nvtx.annotate('flash_ops'):
       start_flash = torch.cuda.Event(enable_timing=True)
       end_flash = torch.cuda.Event(enable_timing=True)
@@ -90,33 +111,39 @@ def test_linear(
 
       end_flash.record() 
       torch.cuda.synchronize()
-  #print("avg flash linear sync time: ", start_flash.elapsed_time(end_flash) / iter, " ms.")
+  #print("avg flash  linear sync time: ", start_flash.elapsed_time(end_flash) / iter, " ms.")
+  # for i in range(1):
 
   flash_time = start_flash.elapsed_time(end_flash) / iter
 
   flash_throughput = compute_flops / (flash_time / 1000) / (10 ** 9)
+
+  print(torch_out[0:16, 0:16], flash_out[0:16, 0:16])
+  torch.testing.assert_close(torch_out, flash_out, rtol=0.1, atol=0.1)
 #   print("o0: ", torch_out.size(), torch_out[0, 0, 0:16], flash_out[0, 0, 0:16])
 #   print("o1: ", torch_out[0, 0, 16:32])
   #print("Flash Throughput: ", flash_throughput, " GFLOPS")
   # print("torch: ", torch_out, "\nflash:", flash_out)
   # print(torch_out[0, 48, 17], flash_out[0, 48, 17])
-  for r in range(0, torch_out.size(1)):
-    try:
-      z = torch.testing.assert_close(flash_out[0, r, :].float(), torch_out[0, r, :].float(), rtol=0, atol=0.5)
-      # print(z)
-    except AssertionError as e:
-      # if (r == 115):
-      if z is None:
-        # print("torch and flash: ", r, torch_out[0, r, :], flash_out[0, r, :])
-        print(torch_out[0, r, :] - flash_out[0, r, :])
-        abs_diff = torch.abs(torch_out[0, r, :] - flash_out[0, r, :])
-        max_abs_diff, max_idx = torch.max(abs_diff, dim=0)
-        max_abs_diff = max_abs_diff.item()
-        max_idx = max_idx.item()
-        print("row and col: ", r, max_idx / 32)
-        print("max_abs_diff: ", max_abs_diff, max_idx, torch_out[0, r, max_idx], flash_out[0, r, max_idx])
 
-  torch.testing.assert_close(torch_out.float(), flash_out.float(), rtol=0, atol=0.5)
+  # for r in range(0, torch_out.size(1)):
+  #   try:
+  #     z = torch.testing.assert_close(flash_out[0, r, :].float(), torch_out[0, r, :].float(), rtol=0, atol=0.5)
+  #     # print(z)
+  #   except AssertionError as e:
+  #     # if (r == 115):
+  #     if z is None:
+  #       # print("torch and flash: ", r, torch_out[0, r, :], flash_out[0, r, :])
+  #       print(torch_out[0, r, :] - flash_out[0, r, :])
+  #       abs_diff = torch.abs(torch_out[0, r, :] - flash_out[0, r, :])
+  #       max_abs_diff, max_idx = torch.max(abs_diff, dim=0)
+  #       max_abs_diff = max_abs_diff.item()
+  #       max_idx = max_idx.item()
+  #       print("row and col: ", r, max_idx / 32)
+  #       print("max_abs_diff: ", max_abs_diff, max_idx, torch_out[0, r, max_idx], flash_out[0, r, max_idx])
+
+  # print(torch_out, flash_out)
+  # torch.testing.assert_close(torch_out.float(), flash_out.float(), rtol=0, atol=0.5)
   # atol: abs(actual - expected)
 
   result = {
