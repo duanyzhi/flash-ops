@@ -11,7 +11,7 @@ namespace flash_ops {
 
 #define MAX(a, b) (a) > (b) ? (a) : (b)
 
-template <int BM, int BN, int BK>
+template <int BM, int BN, int BK, int BK_PAD>
 __device__ void load_smema(half* smema, const half* __restrict__ a, int K, int ik) {
   // load a: [128, 32] [M, K], row major
   // tid = 0 load 8 ele, row = 0, col = 0...7
@@ -27,9 +27,14 @@ __device__ void load_smema(half* smema, const half* __restrict__ a, int K, int i
     int row = i * 32 + tid / 4;
     int col = tid % 4 * 8;
     
-    col = col ^(((row &3)<<3));
-  
-    void* ptr = (void*)(smema + row * BK + col);
+    // col = col ^ (((row & 3) << 3));
+    // if (tid == 0 && ik == 1) {
+    //   printf("row = %d, col = %d, ik = %d, smem=%d,  gmem=%d ;;;", row, col, ik, row * BK_PAD + col, row * K + col + ik * BK);
+    // }
+    // if (row * BK_PAD + col > BM * BK_PAD) {
+    //   printf("error .....");
+    // }
+    void* ptr = (void*)(smema + row * BK_PAD + col);
     uint32_t smem_ptr; 
     asm(
       "{ .reg .u64 smem_ptr; cvta.to.shared.u64 smem_ptr, %1; cvt.u32.u64 %0, smem_ptr; }\n"
@@ -40,7 +45,7 @@ __device__ void load_smema(half* smema, const half* __restrict__ a, int K, int i
   }
 }
 
-template <int BM, int BN, int BK>
+template <int BM, int BN, int BK, int BK_PAD>
 __device__ void load_smemb(half* smemb, const half* __restrict__ b, int K, int ik) {
   // load b: [64, 32] [N, K], colmajor
   int tid = threadIdx.x + threadIdx.y * 32 + threadIdx.z * 2 * 32;
@@ -49,22 +54,31 @@ __device__ void load_smemb(half* smemb, const half* __restrict__ b, int K, int i
     int col = i * 32 + tid / 4;
     int row = tid % 4 * 8;
 
-    col = col ^ (((row & 3) << 3));
+    // col = col ^ (((row & 3) << 3));
   
-    void* ptr = (void*)(smemb + col * BK + row);
+    // if (ik == 1) {
+    //   printf("row = %d, col = %d, ik = %d, smem=%d,  gmem=%d ;;;", row, col, ik, col * BK_PAD + row, col * K + row + ik * BK);
+    // }
+    // if (col * K + row + ik * BK > 128  * 64) {
+    //   printf("error ..... row=%d, col=%d, K=%d, ik = %d, BK=%d\n", row, col, K, ik, BK);
+    // }
+
+    void* ptr = (void*)(smemb + col * BK_PAD + row);
     uint32_t smem_ptr; 
     asm(
       "{ .reg .u64 smem_ptr; cvta.to.shared.u64 smem_ptr, %1; cvt.u32.u64 %0, smem_ptr; }\n"
       : "=r"(smem_ptr) : "l"(ptr)
     );
+
     asm volatile("cp.async.cg.shared.global [%0], [%1], %2;\n" :: "r"(smem_ptr),
                  "l"(&b[col * K + row + ik * BK]), "n"(16));
+    
   }
 }
 
-template <int BM, int BN, int BK, int WMMA_M, int WMMA_N, int WMMA_K>
+template <int BM, int BN, int BK, int BK_PAD, int WMMA_M, int WMMA_N, int WMMA_K>
 __device__ void load_fraga(half *smem, unsigned int *frag, int ik){
-  // load 64x16 frage
+  // load 64x16 frag
 
   // T0: (0,0),(0,1),(8,0),(8,1),(0,8),(0,9),(8,8),(8,9)
   // T1: (1,0),(1,1),(9,0),(9,1),(1,8),(1,9),(9,8),(9,9)
@@ -80,11 +94,8 @@ __device__ void load_fraga(half *smem, unsigned int *frag, int ik){
   int lane_id = tid % warp_size;
 
   int smem_row = threadIdx.y * 64;
-  // int smem_col = threadIdx.z * 64;
 
   for (int n = 0; n < 4; ++n) {  // n for 4 fragement
-    // int row_start = threadIdx.y * 64 + n * 16;
-    // int col_start = ik * 16;
     for (int i = 0; i < 8; i = i + 2) {  // i = 0 2 4 6
       int row{0}, col{0};
       int groupID = lane_id >> 2;
@@ -104,17 +115,18 @@ __device__ void load_fraga(half *smem, unsigned int *frag, int ik){
       row = smem_row + n * 16 + row;
       col = ik * 16 + col;
       
-      frag[n * 4 + i/2] = *(reinterpret_cast<unsigned int *>(smem + row * 32 + col));
+      // if (wid_id == 0 && lane_id == 0) {
+      //   int half_index = row * 32 + col;        // 每行 32 个 half
+      //   int bank_id = (half_index / 2) % 32;
+      //   printf("row, col = (%d, %d), bank id = %d.\n",row, col, bank_id);
+      // }
+      frag[n * 4 + i/2] = *(reinterpret_cast<unsigned int *>(smem + row * BK_PAD + col));
 
-      // half2* h2_ptr = reinterpret_cast<half2*>(&frag[n * 4 + i/2]);
-      // half value = __low2half(*h2_ptr);
-
-      // printf("(%d,%d,%f)", row,col,__half2float(value));
     }
   }
 }
 
-template <int BM, int BN, int BK, int WMMA_M, int WMMA_N, int WMMA_K>
+template <int BM, int BN, int BK, int BK_PAD, int WMMA_M, int WMMA_N, int WMMA_K>
 __device__ void load_fragb(half* smem, unsigned int *frag, int ik){
   int tx = threadIdx.x;
   int tz = threadIdx.z;
@@ -148,11 +160,13 @@ __device__ void load_fragb(half* smem, unsigned int *frag, int ik){
         row = row_start + row;
         col = col_start + col + iter_load * 8;
 
+        // col = col ^ (((row & 3) << 3));
+
         // if (tid == 64) {
         //   printf("(%d, %d)= %f.\n ", row, col, __half2float(smem[row + col * 32]));
         // }
 
-        frag[n * 4 + i/2 + iter_load * 2] = *(reinterpret_cast<unsigned int *>(smem + col * 32 + row));  // once load 2 half data
+        frag[n * 4 + i/2 + iter_load * 2] = *(reinterpret_cast<unsigned int *>(smem + col * BK_PAD + row));  // once load 2 half data
 
         // half2* h2_ptr = reinterpret_cast<half2*>(&frag[n * 4 + i/2 + iter_load * 2]);
         // half value = __low2half(*h2_ptr);
@@ -218,106 +232,6 @@ __device__ void store2globalc(half* smemc, half* gmemc, int bx, int by, int N){
   }
 }
 
-// template <int WMMA_M, int WMMA_N, int WMMA_K>
-// __device__ void print_fraga(nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, nvcuda::wmma::row_major>& frag) {
-//   if (threadIdx.y == 0 && threadIdx.z == 0 && threadIdx.x < 32) {
-//     const int tid = threadIdx.x + threadIdx.y * 32 + threadIdx.z * 32 * 2;
-//     int lane_id = tid % 32;
-  
-//     // __shared__ half smem[smem_num];
-//     // half* s_a = smem;
-//     for (int i = 0; i < 8; ++i) {
-//       int row{0}, col{0};
-//       int groupID = lane_id >> 2;
-//       int threadID_in_group = lane_id % 4;
-      
-//       if (i < 2 || (i >=4 && i < 6)) {
-//         row = groupID;
-//       } else {
-//         row = groupID + 8;
-//       }
-//       if (i < 4) {
-//         col = (threadID_in_group * 2) + (i & 0x1);
-//       } else {
-//         col = (threadID_in_group * 2) + (i & 0x1) + 8;
-//       }
-//       // printf("tid = %d lane_id = %d, groupID = %d, i = %d, row col = (%d, %d) \n", tid, lane_id, groupID, i, row, col);
-//     }
-//   }
-// }
-
-
-// template <int WMMA_M, int WMMA_N, int WMMA_K>
-// __device__ void print_fragb(nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, nvcuda::wmma::col_major>& frag, half* data) {
-//   const int tid = threadIdx.x + threadIdx.y * 32 + threadIdx.z * 32 * 2;
-//   int lane_id = tid % 32;
-
-//   // __shared__ half smem[smem_num];
-//   // half* s_a = smem;
-//   for (int i = 0; i < frag.num_elements; i++) {
-//     int row{0}, col{0};
-//     int groupID = lane_id >> 2;
-//     int threadID_in_group = lane_id % 4;
-//     if (i < 4) {
-//       if (i < 2) {
-//         row = (threadID_in_group * 2) + (i & 0x1);
-//       } else {
-//         row = (threadID_in_group * 2) + (i & 0x1) + 8;
-//       }
-//       col = groupID;
-//     } else {
-//       if (i - 4 < 2) {
-//         row = (threadID_in_group * 2) + (i & 0x1);
-//       } else {
-//         row = (threadID_in_group * 2) + (i & 0x1) + 8;
-//       }
-//       col = groupID + 8; 
-//     }
-    
-
-//     // if (i < 4) {
-//     //   row = i < 2 ? groupID : groupID + 8;
-//     //   col = (threadID_in_group * 2) + (i & 0x1);
-//     // } else {
-//     //   int j = i - 4;
-//     //   row = j < 2 ? groupID : groupID + 8;
-//     //   col = (threadID_in_group * 2) + (j & 0x1) + 8;
-//     // }
-//     // printf("tid = %d row col = (%d, %d), v = %f \n", tid, row, col, __half2float(frag.x[i]));
-
-//     // int row_smem = m_index * WMMA_M + row;
-//     // int col_smem = n_index * WMMA_N + col;
-
-//     data[col * 16 + row] = frag.x[i];
-
-//     // smem_float[row_smem * BN + col_smem] = frag_c[m_index][n_index].x[i];
-//   }
-// }
-
-
-// __device__ void print_fragc(float* frag) {
-//   const int tid = threadIdx.x + threadIdx.y * 32 + threadIdx.z * 32 * 2;
-//   int lane_id = tid % 32;
-
-//   // __shared__ half smem[smem_num];
-//   // half* s_a = smem;
-//   for (int i = 0; i < 8; i++) {
-//     int row{0}, col{0};
-//     int groupID = lane_id >> 2;
-//     int threadID_in_group = lane_id % 4;
-//     if (i < 4) {
-//       row = i < 2 ? groupID : groupID + 8;
-//       col = (threadID_in_group * 2) + (i & 0x1);
-//     } else {
-//       int j = i - 4;
-//       row = j < 2 ? groupID : groupID + 8;
-//       col = (threadID_in_group * 2) + (j & 0x1) + 8;
-//     }
-//     // printf("tid = %d row col = (%d, %d), v = %f \n", tid, row, col, frag[i]);
-
-//   }
-// }
-
 
 // do one mma
 __device__ void mma_sync(unsigned int *frag_a, unsigned int *frag_b, float *frag_c)
@@ -366,23 +280,24 @@ __global__ void multi_stage2_mma_half_kernel(
 
   // printf("bx, by=%d,%d",bx,by);
 
-  constexpr int smem_num = (BM * BK + BN * BK) * STAGE > 2 * BM * BN ? (BM * BK + BN * BK) * STAGE : BM * BN;
+  constexpr int BK_PAD = BK + 8;
+
+  constexpr int smem_num = (BM * BK_PAD + BN * BK_PAD) * STAGE > BM * BN ? (BM * BK_PAD + BN * BK_PAD) * STAGE : BM * BN;
   constexpr size_t smem_size = smem_num * sizeof(half);
 
   static_assert(smem_size < (48 << 10) && "smem_num must be small 49152 bytes.");
 
   __shared__ half smem[smem_num];
   half* smema = smem;
-  half* smemb = smem + BM * BK;
-  half* smema2 = smemb + BN * BK;
-  half* smemb2 = smema2 + BM * BK;
+  half* smemb = smem + BM * BK_PAD;
+  half* smema2 = smemb + BN * BK_PAD;
+  half* smemb2 = smema2 + BM * BK_PAD;
 
   half* smemc = smem;
 
-
   // prologue
-  load_smema<BM, BN, BK>(smema, a + load_block_a_gmem_addr, K, 0);
-  load_smemb<BM, BN, BK>(smemb, b + load_block_b_gmem_addr, K, 0);
+  load_smema<BM, BN, BK, BK_PAD>(smema, a + load_block_a_gmem_addr, K, 0);
+  load_smemb<BM, BN, BK, BK_PAD>(smemb, b + load_block_b_gmem_addr, K, 0);
 
   asm volatile("cp.async.commit_group;\n" ::);
 
@@ -408,8 +323,8 @@ __global__ void multi_stage2_mma_half_kernel(
   for (int lk = 0; lk < K / BK; ++lk) { // do loop for lk, lk = 0-> SA[0], lk = 1 -> SA[1]
     // load next
     if (lk + 1 < K / BK) {
-      load_smema<BM, BN, BK>(SA[(lk + 1) % 2], a + load_block_a_gmem_addr, K, lk + 1);
-      load_smemb<BM, BN, BK>(SB[(lk + 1) % 2], b + load_block_b_gmem_addr, K, lk + 1);
+      load_smema<BM, BN, BK, BK_PAD>(SA[(lk + 1) % 2], a + load_block_a_gmem_addr, K, lk + 1);
+      load_smemb<BM, BN, BK, BK_PAD>(SB[(lk + 1) % 2], b + load_block_b_gmem_addr, K, lk + 1);
     }
     asm volatile("cp.async.commit_group;\n" ::);
 
@@ -417,10 +332,10 @@ __global__ void multi_stage2_mma_half_kernel(
     asm volatile("cp.async.wait_group %0;\n" ::"n"(1));
     __syncthreads();
 
-    // #pragma unroll
+    #pragma unroll
     for (int ik = 0; ik < WARP_K / WMMA_K; ik += 1) {
-      load_fraga<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(SA[lk % 2], frag_a, ik);
-      load_fragb<BM, BN, BK, WMMA_M, WMMA_N, WMMA_K>(SB[lk % 2], frag_b, ik);
+      load_fraga<BM, BN, BK, BK_PAD, WMMA_M, WMMA_N, WMMA_K>(SA[lk % 2], frag_a, ik);
+      load_fragb<BM, BN, BK, BK_PAD, WMMA_M, WMMA_N, WMMA_K>(SB[lk % 2], frag_b, ik);
 
       for (int mii = 0; mii < WARP_M / WMMA_M; mii += 1) { // 0，1，2，3 frag_a
         for (int nii = 0; nii < WARP_N / WMMA_N; nii += 1) {  // 0，1，2，3 frag_b
@@ -473,8 +388,8 @@ at::Tensor multi_stage_mma_forward(const at::Tensor & input, const at::Tensor & 
     // one warp process 64 * 64 * 16, so need 4 warp
     // one warp need 64 / 16 * 64 / 16 * 16 / 16 = 16 time wmma
 
-    cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, 0);
+    // cudaDeviceProp prop;
+    // cudaGetDeviceProperties(&prop, 0);
 
     // // 每个Block最大可用共享内存（静态+动态）
     // printf("每个Block最大共享内存: %zu byte\n", 

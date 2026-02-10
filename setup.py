@@ -53,6 +53,7 @@ def build_for_cuda():
          '--ptxas-options=-v',  # Verbose PTX assembly output
          '--use_fast_math',
          '-Xptxas',
+         '-lineinfo',
         ],
        "cxx": [
             "-std=c++17",
@@ -76,12 +77,12 @@ def build_for_cuda():
         '-Wl,-rpath,' + ':'.join(torch_library_dirs)  # 添加 Torch 库路径
     ],
 
-    if debug == "1":
-        NVCC_FLAGS["cxx"] +=["-g", "-O1"]
-        NVCC_FLAGS["nvcc"] +=['-O1', '--maxrregcount=32', '-G', '-lineinfo', '--ptxas-options=-v',]
-    else:
-        NVCC_FLAGS["cxx"] += ["-O3"]
-        NVCC_FLAGS["nvcc"] += ["-O3"]
+    # if debug == "1":
+    #     NVCC_FLAGS["cxx"] +=["-g", "-O1"]
+    #     NVCC_FLAGS["nvcc"] +=['-O1', '--maxrregcount=32', '-G', '-lineinfo', '--ptxas-options=-v',]
+    # else:
+    NVCC_FLAGS["cxx"] += ["-O3"]
+    NVCC_FLAGS["nvcc"] += ["-O3"]
 
     include_dirs.append(os.path.join("csrc"))
     sources = (
