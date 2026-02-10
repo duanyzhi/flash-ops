@@ -18,7 +18,7 @@ torch.set_printoptions(
 TestInfos = [
     # shape, dtype, bias, device, atol, speedup
     # ((1, 1024, 1024 + 32 + 32, 1024), torch.half, False, "cuda", 0.01, 0.01),
-    # ((1, 128, 128, 32), torch.half, False, "cuda", 0.04, 0.2),
+    # ((1, 128, 128, 64), torch.half, False, "cuda", 0.04, 0.2),
     ((1, 2048, 2048, 2048), torch.half, False, "cuda", 0.1, 0.1),
     # ((1, 128, 128, 128), torch.half, False, "cuda", 0.04, 0.2),
     # ((1, 8192, 8192, 8192), torch.half, True, "cuda", 0.04, 0.2),
