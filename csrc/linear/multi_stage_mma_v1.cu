@@ -223,15 +223,33 @@ __device__ void store_fragc(half* smemc, float* frag_c, int frag_a_num, int frag
   }  // frag a
 }
 
+// template <int BM, int BN, int BK>
+// __device__ void store2globalc(half* smemc, half* gmemc, int bx, int by, int N){
+//   const int row = threadIdx.x + threadIdx.y * 32 + threadIdx.z * 2 * 32;
+//   for (int col = 0; col < BN; ++col) {
+//       gmemc[(by * BM + row) * N + bx * BN + col] = smemc[row * BN + col];
+//   }
+// }
+
 template <int BM, int BN, int BK>
 __device__ void store2globalc(half* smemc, half* gmemc, int bx, int by, int N){
-  const int row = threadIdx.x + threadIdx.y * 32 + threadIdx.z * 2 * 32;
-  for (int col = 0; col < BN; ++col) {
-      gmemc[(by * BM + row) * N + bx * BN + col] = smemc[row * BN + col];
-      // gmemc[(by * BM + row) * N + bx * BN + col] = __float2half(smemc[row * BN + col]);
+  const int tid = threadIdx.x + threadIdx.y * 32 + threadIdx.z * 32 * 2;
+  constexpr int warp_size = 32;
+  int wid_id = tid / warp_size;
+  int lane_id = tid % warp_size;
+  
+  int row_start = wid_id * 32;
+
+  int col = lane_id;
+  int col2 = lane_id + 32;
+
+#pragma unroll
+  for (int r = 0; r < 32; ++r) {
+    int row = row_start + r;
+    reinterpret_cast<half2*>(gmemc)[(by * BM + row) * N / 2 + bx * BN / 2 + col] = reinterpret_cast<half2*>(smemc)[row *  BN / 2 + col];
+    reinterpret_cast<half2*>(gmemc)[(by * BM + row) * N / 2 + bx * BN / 2 + col2] = reinterpret_cast<half2*>(smemc)[row * BN / 2 + col2];
   }
 }
-
 
 // do one mma
 __device__ void mma_sync(unsigned int *frag_a, unsigned int *frag_b, float *frag_c)
@@ -295,7 +313,7 @@ __global__ void multi_stage2_mma_half_kernel(
 
   half* smemc = smem;
 
-  // prologue
+  // // prologue
   load_smema<BM, BN, BK, BK_PAD>(smema, a + load_block_a_gmem_addr, K, 0);
   load_smemb<BM, BN, BK, BK_PAD>(smemb, b + load_block_b_gmem_addr, K, 0);
 
@@ -332,10 +350,20 @@ __global__ void multi_stage2_mma_half_kernel(
     asm volatile("cp.async.wait_group %0;\n" ::"n"(1));
     __syncthreads();
 
+    // // // prologue for stage 1
+    // load_smema<BM, BN, BK, BK_PAD>(smema, a + load_block_a_gmem_addr, K, lk);
+    // load_smemb<BM, BN, BK, BK_PAD>(smemb, b + load_block_b_gmem_addr, K, lk);
+
+    // asm volatile("cp.async.commit_group;\n" ::);
+    // asm volatile("cp.async.wait_group %0;\n" ::"n"(0));
+    // __syncthreads();
+
     #pragma unroll
     for (int ik = 0; ik < WARP_K / WMMA_K; ik += 1) {
       load_fraga<BM, BN, BK, BK_PAD, WMMA_M, WMMA_N, WMMA_K>(SA[lk % 2], frag_a, ik);
       load_fragb<BM, BN, BK, BK_PAD, WMMA_M, WMMA_N, WMMA_K>(SB[lk % 2], frag_b, ik);
+      // load_fraga<BM, BN, BK, BK_PAD, WMMA_M, WMMA_N, WMMA_K>(smema, frag_a, ik);
+      // load_fragb<BM, BN, BK, BK_PAD, WMMA_M, WMMA_N, WMMA_K>(smemb, frag_b, ik);
 
       for (int mii = 0; mii < WARP_M / WMMA_M; mii += 1) { // 0，1，2，3 frag_a
         for (int nii = 0; nii < WARP_N / WMMA_N; nii += 1) {  // 0，1，2，3 frag_b
