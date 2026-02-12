@@ -92,7 +92,7 @@ def build_for_cuda():
             os.path.join("csrc", "norm", "layernorm.cu"),
             os.path.join("csrc", "norm", "rmsnorm.cu"),
             os.path.join("csrc", "linear", "gemm_mma.cu"),
-            os.path.join("csrc", "linear", "multi_stage_mma_v1.cu"),
+            os.path.join("csrc", "linear", "multi_stage_mma_v2.cu"),
             os.path.join("csrc", "linear", "linear.cpp"),
         ]
     )

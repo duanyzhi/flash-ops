@@ -27,13 +27,6 @@ __device__ void load_smema(half* smema, const half* __restrict__ a, int K, int i
     int row = i * 32 + tid / 4;
     int col = tid % 4 * 8;
     
-    // col = col ^ (((row & 3) << 3));
-    // if (tid == 0 && ik == 1) {
-    //   printf("row = %d, col = %d, ik = %d, smem=%d,  gmem=%d ;;;", row, col, ik, row * BK_PAD + col, row * K + col + ik * BK);
-    // }
-    // if (row * BK_PAD + col > BM * BK_PAD) {
-    //   printf("error .....");
-    // }
     void* ptr = (void*)(smema + row * BK_PAD + col);
     uint32_t smem_ptr; 
     asm(
@@ -115,11 +108,6 @@ __device__ void load_fraga(half *smem, unsigned int *frag, int ik){
       row = smem_row + n * 16 + row;
       col = ik * 16 + col;
       
-      // if (wid_id == 0 && lane_id == 0) {
-      //   int half_index = row * 32 + col;        // 每行 32 个 half
-      //   int bank_id = (half_index / 2) % 32;
-      //   printf("row, col = (%d, %d), bank id = %d.\n",row, col, bank_id);
-      // }
       frag[n * 4 + i/2] = *(reinterpret_cast<unsigned int *>(smem + row * BK_PAD + col));
 
     }
@@ -153,26 +141,11 @@ __device__ void load_fragb(half* smem, unsigned int *frag, int ik){
           row = (threadID_in_group * 2) + (i & 0x1) + 8;
         }
         col = groupID;
-        // if (tid == 64) {
-        //   printf("tid %d, lane_id %d, row %d, col %d\n", tid, lane_id, row, col);
-        // }
 
         row = row_start + row;
         col = col_start + col + iter_load * 8;
 
-        // col = col ^ (((row & 3) << 3));
-
-        // if (tid == 64) {
-        //   printf("(%d, %d)= %f.\n ", row, col, __half2float(smem[row + col * 32]));
-        // }
-
         frag[n * 4 + i/2 + iter_load * 2] = *(reinterpret_cast<unsigned int *>(smem + col * BK_PAD + row));  // once load 2 half data
-
-        // half2* h2_ptr = reinterpret_cast<half2*>(&frag[n * 4 + i/2 + iter_load * 2]);
-        // half value = __low2half(*h2_ptr);
-
-        // printf("(%d,%d,%f)", row,col,__half2float(value));
-
       }
     }
   }  // iter
@@ -188,29 +161,85 @@ __device__ void store_fragc(half* smemc, float* frag_c, int frag_a_num, int frag
   int start = threadIdx.y * WMMA_M * frag_a_num;
   int end = threadIdx.z * WMMA_N * frag_b_num;
 
+  int groupID = lane_id >> 2;
+  int tid4 = lane_id & 3;
+  int base_col = tid4 * 2;
+
+  int row0 = groupID;
+  int col0 = base_col;
+
+  int row2 = groupID + 8;
+  int col2 = base_col;
+
+  int row4 = groupID;
+  int col4 = base_col + 8;
+
+  int row6 = groupID + 8;
+  int col6 = base_col + 8;
+
+  int BN_PAD = BN + 8;  // pad for store bank conflict
+  // constexpr int BN_half = BN / 2;
+
+  // float2* frag_c_float2 = reinterpret_cast<float2*>(frag_c);
+
 #pragma unroll
   for (int r = 0; r < frag_a_num; ++r) {
 #pragma unroll
     for (int c = 0; c < frag_b_num; ++c) {
+      // (0, 0), (0, 1)
+      int srow0 = start + row0 + r * 16;
+      int scol0 = end + col0 + c * 16;
+      reinterpret_cast<half2*>(smemc)[(srow0 * BN_PAD + scol0)/2] = __float22half2_rn(reinterpret_cast<float2*>(frag_c)[(0 + c * 8 + r * 32) / 2]);
 
-      for (int i = 0; i < 8; i++) {
-        int row{0}, col{0};
-        int groupID = lane_id >> 2;
-        int threadID_in_group = lane_id % 4;
-        if (i < 4) {
-          row = i < 2 ? groupID : groupID + 8;
-          col = (threadID_in_group * 2) + (i & 0x1);
-        } else {
-          int j = i - 4;
-          row = j < 2 ? groupID : groupID + 8;
-          col = (threadID_in_group * 2) + (j & 0x1) + 8;
-        }
+      // smemc[srow0 * BN + scol0] = frag_c[0 + c * 8 + r * 32];
+      // smemc[srow0 * BN + scol0 + 1] = frag_c[1 + c * 8 + r * 32];
 
-        int srow = start + row + r * 16;
-        int scol = end + col + c * 16;
+      // (8, 0), (8, 1)
+      int srow2 = start + row2 + r * 16;
+      int scol2 = end + col2 + c * 16;
+      reinterpret_cast<half2*>(smemc)[(srow2 * BN_PAD + scol2)/2] = __float22half2_rn(reinterpret_cast<float2*>(frag_c)[(2 + c * 8 + r * 32) / 2]);
+      // smemc[srow2 * BN + scol2 + 1] = frag_c[3 + c * 8 + r * 32];
 
-        smemc[srow * BN + scol] = frag_c[i + c * 8 + r * 32];
-      }
+      // (0, 8), (0, 9)
+      int srow4 = start + row4 + r * 16;
+      int scol4 = end + col4 + c * 16;
+      reinterpret_cast<half2*>(smemc)[(srow4 * BN_PAD + scol4)/2] = __float22half2_rn(reinterpret_cast<float2*>(frag_c)[(4 + c * 8 + r * 32) / 2]);
+
+      // smemc[srow4 * BN + scol4] = frag_c[4 + c * 8 + r * 32];
+      // smemc[srow4 * BN + scol4 + 1] = frag_c[5 + c * 8 + r * 32];
+
+      // (8, 8), (8, 9)
+      int srow6 = start + row6 + r * 16;
+      int scol6 = end + col6 + c * 16;
+      reinterpret_cast<half2*>(smemc)[(srow6 * BN_PAD + scol6)/2] = __float22half2_rn(reinterpret_cast<float2*>(frag_c)[(6 + c * 8 + r * 32) / 2]);
+
+      // smemc[srow6 * BN + scol6] = frag_c[6 + c * 8 + r * 32];
+      // smemc[srow6 * BN + scol6 + 1] = frag_c[7 + c * 8 + r * 32];
+
+      // if (tid < 32 && r == 0 && c == 0 && threadIdx.y == 0 && threadIdx.z == 0) {
+      //   printf("lane id = %d, (%d,%d), (%d,%d), (%d, %d), (%d, %d)\n", lane_id, row0, col0, row2, col2, row4, col4, row6, col6);
+      // }
+
+      // for (int i = 0; i < 8; i++) {
+      //   int row{0}, col{0};
+      //   int groupID = lane_id >> 2;
+      //   int threadID_in_group = lane_id % 4;
+      //   if (i < 4) {
+      //     row = i < 2 ? groupID : groupID + 8;
+      //     col = (threadID_in_group * 2) + (i & 0x1);
+      //   } else {
+      //     int j = i - 4;
+      //     row = j < 2 ? groupID : groupID + 8;
+      //     col = (threadID_in_group * 2) + (j & 0x1) + 8;
+      //   }
+
+      //   int srow = start + row + r * 16;
+      //   int scol = end + col + c * 16;
+
+      //   // scol ^= ((srow & 7) << 3);
+
+      //   smemc[srow * BN + scol] = frag_c[i + c * 8 + r * 32];
+      // }
     }  // frag b
   }  // frag a
 }
@@ -227,11 +256,16 @@ __device__ void store2globalc(half* smemc, half* gmemc, int bx, int by, int N){
   int col = lane_id;
   int col2 = lane_id + 32;
 
-#pragma unroll
+  int N_half = N / 2;
+
+  int BN_PAD = BN + 8;
+  constexpr int BN_half = BN / 2;
+
+  #pragma unroll
   for (int r = 0; r < 32; ++r) {
     int row = row_start + r;
-    reinterpret_cast<half2*>(gmemc)[(by * BM + row) * N / 2 + bx * BN / 2 + col] = reinterpret_cast<half2*>(smemc)[row *  BN / 2 + col];
-    reinterpret_cast<half2*>(gmemc)[(by * BM + row) * N / 2 + bx * BN / 2 + col2] = reinterpret_cast<half2*>(smemc)[row * BN / 2 + col2];
+    reinterpret_cast<half2*>(gmemc)[(by * BM + row) * N_half + bx * BN_half + col] = reinterpret_cast<half2*>(smemc)[row *  BN_PAD / 2 + col];
+    reinterpret_cast<half2*>(gmemc)[(by * BM + row) * N_half + bx * BN_half + col2] = reinterpret_cast<half2*>(smemc)[row * BN_PAD / 2 + col2];
   }
 }
 
