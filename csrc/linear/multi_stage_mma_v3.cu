@@ -83,34 +83,46 @@ __device__ void load_fraga(half *smem, unsigned int *frag, int ik){
   
   const int tid = threadIdx.x + tid_y * 32 + tid_z * 32 * 2;
   constexpr int warp_size = 32;
-  int wid_id = tid / warp_size;
+  // int wid_id = tid / warp_size;
   int lane_id = tid % warp_size;
+
+  int groupID = lane_id >> 2;
+  int tid4 = lane_id & 3;
+  int base_col = tid4 * 2;
+
+  int row0 = groupID;
+  int col0 = base_col;
+
+  int row2 = groupID + 8;
+  int col2 = base_col;
+
+  int row4 = groupID;
+  int col4 = base_col + 8;
+
+  int row6 = groupID + 8;
+  int col6 = base_col + 8;
 
   int smem_row = threadIdx.y * 64;
 
+  int ik_step = ik * 16;
+
+#pragma unroll
   for (int n = 0; n < 4; ++n) {  // n for 4 fragement
-    for (int i = 0; i < 8; i = i + 2) {  // i = 0 2 4 6
-      int row{0}, col{0};
-      int groupID = lane_id >> 2;
-      int threadID_in_group = lane_id % 4;
-      
-      if (i < 2 || (i >=4 && i < 6)) {
-        row = groupID;
-      } else {
-        row = groupID + 8;
-      }
-      if (i < 4) {
-        col = (threadID_in_group * 2) + (i & 0x1);
-      } else {
-        col = (threadID_in_group * 2) + (i & 0x1) + 8;
-      }
+    int srow0 = smem_row + n * 16 + row0;
+    int scol0 = ik_step + col0;
+    frag[n * 4 + 0] = *(reinterpret_cast<unsigned int *>(smem + srow0 * BK_PAD + scol0));
 
-      row = smem_row + n * 16 + row;
-      col = ik * 16 + col;
-      
-      frag[n * 4 + i/2] = *(reinterpret_cast<unsigned int *>(smem + row * BK_PAD + col));
+    int srow2 = smem_row + n * 16 + row2;
+    int scol2 = ik_step + col2;
+    frag[n * 4 + 1] = *(reinterpret_cast<unsigned int *>(smem + srow2 * BK_PAD + scol2));
 
-    }
+    int srow4 = smem_row + n * 16 + row4;
+    int scol4 = ik_step+ col4;
+    frag[n * 4 + 2] = *(reinterpret_cast<unsigned int *>(smem + srow4 * BK_PAD + scol4));
+
+    int srow6 = smem_row + n * 16 + row6;
+    int scol6 = ik_step + col6;
+    frag[n * 4 + 3] = *(reinterpret_cast<unsigned int *>(smem + srow6 * BK_PAD + scol6));
   }
 }
 
@@ -150,6 +162,54 @@ __device__ void load_fragb(half* smem, unsigned int *frag, int ik){
     }
   }  // iter
 }
+
+// template <int BM, int BN, int BK, int BK_PAD, int WMMA_M, int WMMA_N, int WMMA_K>
+// __device__ void load_fragb(half* smem, unsigned int *frag, int ik){
+//   int tx = threadIdx.x;
+//   int tz = threadIdx.z;
+  
+//   // get row col for fragb
+//   int row_start = ik * 16;
+//   int col_start = tz * 64;
+  
+//   const int tid = tx + 2 * 32 + tz * 32 * 2;
+//   int lane_id = tid % 32;
+
+//   int groupID = lane_id >> 2;      // 0..7
+//   int tid4  = lane_id & 3;       // 0..3
+
+//   int base_row = tid4 * 2;
+//   int base_col = groupID;
+
+//   int r0 = base_row + 0;
+//   int r1 = base_row + 8;
+
+//   int c0 = base_col;
+//   int c1 = base_col + 8;
+
+// #pragma unroll
+//   for (int n = 0; n < 4; ++n) {  // n for 4 fragement
+//     int srow0 = row_start + r0;
+//     int scol0 = col_start + c0 + n * 16;
+//     frag[n * 4 + 0] = *(reinterpret_cast<unsigned int *>(smem + scol0 * BK_PAD + srow0));
+
+//     int srow1 = row_start + r1;
+//     int scol1 = col_start + c0 + n * 16;
+//     frag[n * 4 + 1] = *(reinterpret_cast<unsigned int *>(smem + scol1 * BK_PAD + srow1));
+
+//     int srow2 = row_start + r0;
+//     int scol2 = col_start + c1 + n * 16;
+//     frag[n * 4 + 2] = *(reinterpret_cast<unsigned int *>(smem + scol2 * BK_PAD + srow2));
+
+//     int srow3 = row_start + r1;
+//     int scol3 = col_start + c1 + n * 16;
+//     frag[n * 4 + 3] = *(reinterpret_cast<unsigned int *>(smem + scol3 * BK_PAD + srow3));
+
+//     // if (lane_id == 0 && n == 0) {
+//     //   printf("%d %d\n", base_row, base_col);
+//     // }
+//   }  // iter
+// }
 
 template <int BM, int BN, int BK, int WMMA_M, int WMMA_N, int WMMA_K>
 __device__ void store_fragc(half* smemc, float* frag_c, int frag_a_num, int frag_b_num){
@@ -220,6 +280,7 @@ __device__ void store_fragc(half* smemc, float* frag_c, int frag_a_num, int frag
     }  // frag b
   }  // frag a
 }
+
 
 template <int BM, int BN, int BK>
 __device__ void store2globalc(half* smemc, half* gmemc, int bx, int by, int N){
