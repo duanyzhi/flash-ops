@@ -12,5 +12,7 @@ PYBIND11_MODULE(_C, m) {
     m.def("layer_norm", &flash_ops::layer_norm, "Flash LayerNorm Op.");
     m.def("rms_norm", &flash_ops::rms_norm, "Flash RMSNorm Op.");
     m.def("linear", &flash_ops::linear, "Flash Linear Op.");
+    m.def("attention", &flash_ops::attention, "Flash Attention Op.");
+    m.def("softmax", &flash_ops::softmax, "softmax op.");
 }
 

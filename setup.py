@@ -42,7 +42,7 @@ def build_for_cuda():
             pass
 
     debug = os.getenv('FLASH_OPS_DEBUG', 0)
-    max_jobs = os.getenv('MAX_JOBS', 8)
+    max_jobs = os.getenv('MAX_JOBS', 32)
 
     # Compiler flags.
     NVCC_FLAGS = {
@@ -91,8 +91,10 @@ def build_for_cuda():
             os.path.join("csrc", "norm", "norm.cpp"),
             os.path.join("csrc", "norm", "layernorm.cu"),
             os.path.join("csrc", "norm", "rmsnorm.cu"),
+            os.path.join("csrc", "norm", "softmax.cu"),
             os.path.join("csrc", "linear", "gemm_mma.cu"),
             os.path.join("csrc", "linear", "multi_stage_mma_v3.cu"),
+            os.path.join("csrc", "attn", "simple_gemm_cuda_core.cu"),
             os.path.join("csrc", "linear", "linear.cpp"),
         ]
     )

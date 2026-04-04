@@ -21,4 +21,9 @@ at::Tensor rms_norm(const at::Tensor x, at::IntArrayRef normalized_shape, const 
 
 at::Tensor linear(const at::Tensor & input, const at::Tensor & weight, const c10::optional<at::Tensor> & bias={});
 
+at::Tensor attention(const at::Tensor & Q, const at::Tensor & K, const at::Tensor & V);
+
+at::Tensor softmax(const at::Tensor& input);
+
+
 }  // namespace flash_ops
