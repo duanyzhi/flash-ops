@@ -2,7 +2,7 @@ import torch
 from flash_ops import _C
 
 
-a = torch.randn([1, 128]).float().cuda()
+a = torch.randn([32, 128]).float().cuda()
 
 print(a, a.max())
 
