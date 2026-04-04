@@ -88,6 +88,40 @@ __global__ void forward_kernel(const float* __restrict__ x, float* output, int B
   __syncthreads();
 }
 
+
+template<int thread_num>
+__global__ void online_softmax_forward_kernel(const float* __restrict__ x, float* output, int B, int L) {
+  int tid = blockIdx.x + blockDim.x + threadIdx.x;
+  const float* block_x = x + blockIdx.x * L;
+
+  // loop-1. 
+  // mj = max (mj−1, xj)
+  // dj = dj−1 × e^(mj−1−mj) + e^(xj−mj)
+  int num = L / thread_num;
+  float max_pre = block_x[0];
+  float mj = block_x[0];
+  float dj_1 = __expf(block_x[0] - mj);
+  float dj = 0;
+  for (int j = 1; j < L; ++j) {
+    mj = max(max_pre, block_x[j]);
+    dj = dj_1 * __expf(max_pre - mj) + __expf(block_x[j] - mj);
+
+    // update
+    max_pre = mj;
+    dj_1 = dj;
+  }
+
+  __syncthreads();
+  float sum_scale = 1.0 / dj;
+
+  // loop-2: y_j = exp(x_j - mj) / dj
+  for (int j = 0; j < num; ++j) {
+    output[threadIdx.x * num + j + blockIdx.x * L] = __expf(block_x[threadIdx.x * num + j] - mj) * sum_scale;
+  }
+  __syncthreads();
+}
+
+
 at::Tensor softmax(const at::Tensor& input) {
     const int B = input.size(0);
     const int L = input.size(1);
@@ -101,7 +135,7 @@ at::Tensor softmax(const at::Tensor& input) {
     dim3 block_dim(thread_num);
 
     cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
-    forward_kernel<thread_num><<<grid_dim, block_dim, 0, stream>>>(
+    online_softmax_forward_kernel<thread_num><<<grid_dim, block_dim, 0, stream>>>(
       reinterpret_cast<float*>(input.data_ptr()),
       reinterpret_cast<float*>(output.data_ptr()),
       B, L
